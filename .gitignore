@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+www/
+android/app/build/
+android/.gradle/
+android/local.properties
+
+# Signing keys (Critical)
+alrawi.keystore
+
+# Large artifacts
+*.apk
+*.aab
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.sublime-project
+*.sublime-workspace

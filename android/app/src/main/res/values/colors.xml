@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#3eec13</color>
+    <color name="colorPrimaryDark">#2cc50e</color>
+    <color name="colorAccent">#3eec13</color>
+
+    <!-- Widget Colors (matching app theme) -->
+    <color name="widget_bg">#F9F8F6</color>
+    <color name="widget_card_bg">#FFFFFF</color>
+    <color name="widget_text_primary">#2A2A2A</color>
+    <color name="widget_text_secondary">#5C5C5C</color>
+    <color name="widget_divider">#E5E3DF</color>
+    <color name="widget_sage">#637260</color>
+    <color name="widget_green">#3eec13</color>
+    <color name="widget_green_dark">#2cc50e</color>
+    <color name="widget_green_subtle">#1A3eec13</color>
+    <color name="widget_pill_bg">#F5F4F2</color>
+    <color name="widget_pill_done_bg">#E8FCE4</color>
+    <color name="widget_icon_circle">#EEEDE9</color>
+    <color name="widget_icon_circle_done">#C8F5BE</color>
+    <color name="widget_check_ring_track">#E5E3DF</color>
+
+    <!-- Dark Widget Colors -->
+    <color name="widget_dark_bg">#121212</color>
+    <color name="widget_dark_card_bg">#1E1E1E</color>
+    <color name="widget_dark_text_primary">#F1F1F1</color>
+    <color name="widget_dark_text_secondary">#A1A1A1</color>
+    <color name="widget_dark_divider">#2D2D2D</color>
+    <color name="widget_dark_sage">#9AB297</color>
+    <color name="widget_dark_green">#4ade80</color>
+    <color name="widget_dark_green_dark">#22c55e</color>
+    <color name="widget_dark_pill_bg">#070707</color>
+    <color name="widget_dark_pill_done_bg">#092611</color>
+    <color name="widget_dark_icon_circle">#2D2D2D</color>
+    <color name="widget_dark_icon_circle_done">#1a472a</color>
+</resources>

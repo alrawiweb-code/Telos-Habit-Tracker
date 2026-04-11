@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+  <meta name="theme-color" content="#121212">
+  <title>Telos: Habit, Journal & To-Do</title>
+  <meta name="description" content="A mindful, editorial-style daily habit, journal & to-do tracker."/>
+
+  <!-- Favicons & PWA Icons -->
+  <link rel="icon" href="/favicon.ico" sizes="32x32"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+  <link rel="icon" href="/favicon-96x96.png" type="image/png" sizes="96x96"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180"/>
+  <link rel="manifest" href="/site.webmanifest"/>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com" rel="preconnect"/>
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet"/>
+  <!-- Material Symbols -->
+  <!-- Prevent FOUT on icon ligatures -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" rel="stylesheet"/>
+
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+  <!-- Splash Screen -->
+  <div id="splash-screen" class="splash-screen">
+    <div class="splash-content">
+      <img src="Favicons/web-app-manifest-512x512.png" alt="Telos Logo" class="splash-logo">
+      <h1 class="splash-title">Telos</h1>
+      <p class="splash-quote">Small steps. Great journeys.</p>
+    </div>
+    <div class="splash-footer">
+      <span>by alrawi ventures</span>
+    </div>
+  </div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: ONBOARDING
+═══════════════════════════════════════════ -->
+<div id="screen-onboarding" class="screen onboarding-screen">
+  <div id="onboarding-step-1" class="onboarding-step active">
+    <h1 class="onboarding-brand">TELOS</h1>
+    <p class="onboarding-sub">Know your purpose.</p>
+  </div>
+  <div id="onboarding-step-2" class="onboarding-step">
+    <p class="onboarding-text">A new day begins.</p>
+    <button id="btn-start-app" class="btn-start-app">Start</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: TODAY (default)
+═══════════════════════════════════════════ -->
+<div id="screen-today" class="screen active">
+
+  <!-- Sticky Header / Calendar Strip -->
+  <header id="main-header">
+    <div class="header-inner">
+      <div class="calendar-header" style="justify-content: center; position: relative;">
+        <div id="btn-open-calendar" role="button" tabindex="0" aria-label="Open Calendar" style="cursor: pointer; display: flex; align-items: center; gap: 4px; transition: opacity 0.2s;">
+          <div class="month-label" id="month-label" style="display: flex; align-items: center; gap: 4px;">
+            April 2026 <span class="material-symbols-outlined" style="font-size: 16px;">expand_more</span>
+          </div>
+        </div>
+        <button id="btn-jump-today" class="btn-jump-today hidden">Today</button>
+      </div>
+      <div class="calendar-strip" id="calendar-strip">
+        <!-- JS renders days here -->
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main id="main-content">
+    <!-- Conversational Summary -->
+    <section class="summary-section" id="summary-section">
+      <h1 id="summary-text" class="summary-heading">
+        A quiet morning.<br/>
+        <span class="summary-sub" id="summary-sub">You've completed 0 of 0 intentions today.</span>
+      </h1>
+    </section>
+
+    <!-- Habit Cards List -->
+    <section id="habit-list" class="habit-list">
+      <!-- JS renders habit cards here -->
+    </section>
+
+    <!-- Empty State -->
+    <div id="empty-state" class="empty-state hidden">
+      <span class="material-symbols-outlined empty-icon">spa</span>
+      <p class="empty-text">No intentions set for today.<br/><em>Rest is productive, too.</em></p>
+      <button class="btn-add-first" id="btn-add-first">Set your first intention</button>
+    </div>
+  </main>
+
+  <!-- FAB -->
+  <button class="fab" id="fab-add" aria-label="Add new intention">
+    <span class="material-symbols-outlined">add</span>
+  </button>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: JOURNAL
+═══════════════════════════════════════════ -->
+<div id="screen-journal" class="screen">
+  <div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-end;">
+    <div>
+      <h2 class="page-title">Journal</h2>
+      <p class="page-subtitle">Reflect on your day.</p>
+    </div>
+    <button class="btn-browse-journal" id="btn-browse-journal" style="margin-top:0;">
+      <span class="material-symbols-outlined">auto_stories</span>
+      Browse
+    </button>
+  </div>
+  <main class="journal-main">
+    <div class="journal-date-label" id="journal-date-label"></div>
+    <textarea id="journal-textarea" class="journal-textarea" placeholder="How did today feel? What are you grateful for?"></textarea>
+    <button class="btn-save" id="btn-save-journal">
+      <span class="material-symbols-outlined">check</span>
+      Save entry
+    </button>
+    <div class="journal-history" id="journal-history">
+      <!-- Past entries -->
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: PROFILE / STATS
+═══════════════════════════════════════════ -->
+<div id="screen-profile" class="screen">
+  <div class="page-header">
+    <h2 class="page-title">Profile</h2>
+    <p class="page-subtitle">Your consistency, at a glance.</p>
+  </div>
+  <main class="profile-main">
+    <div class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-number" id="stat-total">0</span>
+        <span class="stat-label">Total Habits</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-streak">0</span>
+        <span class="stat-label">Day Streak</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-completed-today">0</span>
+        <span class="stat-label">Done Today</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-rate">0%</span>
+        <span class="stat-label">Completion Rate</span>
+      </div>
+    </div>
+
+    <div class="profile-menu">
+      <div class="menu-item-group-label">System</div>
+      
+      <div class="menu-item no-hover">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">dark_mode</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Dark Mode</p>
+            <p class="menu-item-sub">Gentle on the eyes</p>
+          </div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-theme" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="menu-item no-hover">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">vibration</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Haptic Feedback</p>
+            <p class="menu-item-sub">Vibrate on completion</p>
+          </div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-haptics" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="menu-item-group-label" style="margin-top: 16px;">Preferences</div>
+
+      <div class="menu-item" id="menu-all-habits" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">checklist_rtl</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">All Habits</p>
+            <p class="menu-item-sub">Manage and edit your intentions</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
+      <div class="menu-item" id="menu-notif-settings" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">notifications_active</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Notifications & Reminders</p>
+            <p class="menu-item-sub">Schedules, smart alerts, and snooze</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
+      <div class="menu-item" id="menu-about" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">info</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">About Telos</p>
+            <p class="menu-item-sub">Learn about Alrawi Ventures</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
+      <div class="menu-item" id="menu-privacy" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">policy</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Privacy Policy</p>
+            <p class="menu-item-sub">How we protect your data</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
+      <div class="menu-item danger" id="btn-clear-data-menu" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">delete_forever</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Clear All Data</p>
+            <p class="menu-item-sub">Reset everything (caution)</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: ALL HABITS (MANAGEMENT)
+═══════════════════════════════════════════ -->
+<div id="screen-all-habits" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-habits" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">All Habits</h2>
+      <p class="page-subtitle">Refine your daily systems.</p>
+    </div>
+  </div>
+  <main class="profile-main">
+    <div class="habit-management-section">
+      <p class="section-heading" style="margin-bottom: 12px;">Recurring Habits</p>
+      <ul class="habit-management-list" id="habit-management-list-recurring">
+        <!-- JS renders recurring habits here -->
+      </ul>
+    </div>
+    <div class="habit-management-section" style="margin-top: 28px;">
+      <p class="section-heading" style="margin-bottom: 12px;">One-Time Tasks</p>
+      <ul class="habit-management-list" id="habit-management-list-onetime">
+        <!-- JS renders one-time tasks here -->
+      </ul>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: NOTIFICATION SETTINGS
+═══════════════════════════════════════════ -->
+<div id="screen-notif-settings" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-notif" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">Notifications</h2>
+      <p class="page-subtitle">Tailor your reminders.</p>
+    </div>
+  </div>
+  <main class="profile-main">
+    <div class="notif-section">
+      <div class="notif-section-header">
+        <div>
+          <h3 class="section-heading" style="margin-bottom:2px;">Master Control</h3>
+          <p class="notif-section-sub">Enable or disable all app alerts.</p>
+        </div>
+        <label class="toggle-switch" aria-label="Enable Notifications">
+          <input type="checkbox" id="notif-master-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div id="notif-body" class="notif-body">
+        <!-- Default Reminder Times -->
+        <div class="notif-card">
+          <p class="notif-card-title">
+            <span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px;">schedule</span>
+            Default Reminder Times
+          </p>
+          <div class="notif-time-row">
+            <span class="notif-time-label">Morning</span>
+            <input type="time" class="notif-time-input" id="default-time-morning" value="07:00" />
+          </div>
+          <div class="notif-time-row">
+            <span class="notif-time-label">Afternoon</span>
+            <input type="time" class="notif-time-input" id="default-time-afternoon" value="13:00" />
+          </div>
+          <div class="notif-time-row">
+            <span class="notif-time-label">Evening</span>
+            <input type="time" class="notif-time-input" id="default-time-evening" value="19:00" />
+          </div>
+        </div>
+
+        <!-- Habit-Level Reminders -->
+        <div class="notif-card">
+          <p class="notif-card-title">
+            <span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px;">notifications_active</span>
+            Habit Reminders
+          </p>
+          <ul class="notif-habit-list" id="notif-habit-list">
+            <!-- JS renders per-habit rows here -->
+          </ul>
+        </div>
+
+        <!-- Smart Reminders -->
+        <div class="notif-card">
+          <div class="notif-row">
+            <div>
+              <p class="notif-row-title">
+                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">auto_awesome</span>
+                Smart Reminders
+              </p>
+              <p class="notif-row-sub">Only notify if habit is still incomplete</p>
+            </div>
+            <label class="toggle-switch" aria-label="Enable Smart Reminders">
+              <input type="checkbox" id="notif-smart-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="smart-times-panel" class="notif-sub-panel hidden">
+            <div class="notif-time-row">
+              <span class="notif-time-label">Check-in 1</span>
+              <input type="time" class="notif-time-input" id="smart-time-1" value="18:00" />
+            </div>
+            <div class="notif-time-row">
+              <span class="notif-time-label">Check-in 2</span>
+              <input type="time" class="notif-time-input" id="smart-time-2" value="21:00" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Streak Alerts -->
+        <div class="notif-card">
+          <div class="notif-row">
+            <div>
+              <p class="notif-row-title">
+                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">local_fire_department</span>
+                Streak Protection Alerts
+              </p>
+              <p class="notif-row-sub">Warn before a streak is broken</p>
+            </div>
+            <label class="toggle-switch" aria-label="Enable Streak Alerts">
+              <input type="checkbox" id="notif-streak-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="streak-time-panel" class="notif-sub-panel hidden">
+            <div class="notif-time-row">
+              <span class="notif-time-label">Alert time</span>
+              <input type="time" class="notif-time-input" id="streak-time" value="20:00" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Snooze Settings -->
+        <div class="notif-card">
+          <div class="notif-row">
+            <div>
+              <p class="notif-row-title">
+                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">snooze</span>
+                Snooze Options
+              </p>
+              <p class="notif-row-sub">Appear as actions on notifications</p>
+            </div>
+            <label class="toggle-switch" aria-label="Enable Snooze">
+              <input type="checkbox" id="notif-snooze-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="snooze-panel" class="notif-sub-panel hidden">
+            <div class="snooze-chips">
+              <label class="snooze-chip"><input type="checkbox" value="10" /> 10 min</label>
+              <label class="snooze-chip"><input type="checkbox" value="30" checked /> 30 min</label>
+              <label class="snooze-chip"><input type="checkbox" value="60" checked /> 1 hour</label>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /notif-body -->
+    </div><!-- /notif-section -->
+
+    <div class="danger-zone">
+      <button class="btn-clear" id="btn-clear-data">
+        <span class="material-symbols-outlined">delete_sweep</span>
+        Clear all data
+      </button>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: ABOUT US
+     ═══════════════════════════════════════════ -->
+<div id="screen-about" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-about" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">About Us</h2>
+      <p class="page-subtitle">The vision behind Telos.</p>
+    </div>
+  </div>
+  <main class="profile-main">
+    <div class="about-content">
+      <h3 style="font-family: var(--font-display); font-weight: 400; font-size: 20px; margin-bottom: 12px; color: var(--charcoal);">Developing Simple Intention</h3>
+      <p style="margin-bottom: 20px; line-height: 1.6;">This app is developed by <strong>Alrawi Ventures</strong>.</p>
+      <p style="line-height: 1.6; color: var(--slate);">We focus on building simple, intuitive, and reliable digital experiences that deliver real value to users.</p>
+      
+      <div style="margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--greige); text-align: center;">
+        <img src="Favicons/web-app-manifest-192x192.png" alt="Logo" style="width: 48px; height: 48px; border-radius: 12px; opacity: 0.6; filter: grayscale(1); margin-bottom: 8px;">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--sage); font-weight: 700;">Version 0.1.0</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: PRIVACY POLICY (WEBVIEW)
+     ═══════════════════════════════════════════ -->
+<div id="screen-privacy" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-privacy" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">Privacy Policy</h2>
+      <p class="page-subtitle">Your data is yours.</p>
+    </div>
+  </div>
+  <main class="profile-main webview-main">
+    <div class="webview-container">
+      <iframe id="privacy-iframe" title="Privacy Policy" src="about:blank"></iframe>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: HABIT DETAIL
+═══════════════════════════════════════════ -->
+<div id="screen-habit-detail" class="screen">
+  <div class="detail-header-actions">
+    <button class="btn-back" id="btn-back" aria-label="Go back">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <button class="btn-edit-habit" id="btn-edit-detail" aria-label="Edit habit">
+      <span class="material-symbols-outlined">edit</span>
+      Edit
+    </button>
+  </div>
+
+  <main class="detail-main">
+    <!-- Habit title -->
+    <div class="detail-title-row">
+      <span class="material-symbols-outlined detail-habit-icon" id="detail-icon">self_improvement</span>
+      <h1 class="detail-habit-name" id="detail-habit-name">Morning Meditation</h1>
+    </div>
+
+    <!-- Streaks -->
+    <div class="detail-streaks" id="detail-streaks">
+      <span class="streak-item">
+        <span class="streak-label">CURRENT</span>
+        <span class="streak-value" id="detail-streak-current">0 days</span>
+      </span>
+      <span class="streak-dot">·</span>
+      <span class="streak-item">
+        <span class="streak-label">BEST</span>
+        <span class="streak-value" id="detail-streak-best">0 days</span>
+      </span>
+    </div>
+
+    <!-- Per-habit journal card -->
+    <div class="detail-journal-card">
+      <textarea
+        id="detail-journal-textarea"
+        class="detail-journal-textarea"
+        placeholder="How did this feel today?"
+        rows="4"
+      ></textarea>
+      <div class="detail-journal-footer">
+        <button class="btn-save-entry" id="btn-save-entry">
+          Save Entry
+        </button>
+      </div>
+    </div>
+
+    <!-- Past habit entries -->
+    <div class="detail-entries" id="detail-entries">
+      <!-- JS renders past entries here -->
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     BOTTOM NAVIGATION
+═══════════════════════════════════════════ -->
+<nav class="bottom-nav" id="bottom-nav" role="tablist" aria-label="Main navigation">
+  <a href="#" class="nav-item active" id="nav-today" data-screen="today" role="tab" aria-selected="true" aria-label="Today">
+    <div class="nav-icon"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1;">home</span></div>
+    <span class="nav-label">Today</span>
+  </a>
+  <a href="#" class="nav-item" id="nav-journal" data-screen="journal" role="tab" aria-selected="false" aria-label="Journal">
+    <div class="nav-icon"><span class="material-symbols-outlined">menu_book</span></div>
+    <span class="nav-label">Journal</span>
+  </a>
+  <a href="#" class="nav-item" id="nav-profile" data-screen="profile" role="tab" aria-selected="false" aria-label="Profile">
+    <div class="nav-icon"><span class="material-symbols-outlined">person</span></div>
+    <span class="nav-label">Profile</span>
+  </a>
+</nav>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: ADD INTENTION (with schedule)
+═══════════════════════════════════════════ -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal modal-tall" id="add-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-title">New Intention</h2>
+      <button class="modal-close" aria-label="Close" id="modal-close-btn">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="modal-body modal-body-scroll">
+      <!-- Name -->
+      <label class="form-label" for="habit-name-input">Name</label>
+      <input
+        id="habit-name-input"
+        class="form-input"
+        type="text"
+        placeholder="e.g. Morning Meditation"
+        maxlength="60"
+        autocomplete="off"
+      />
+      <!-- Description -->
+      <label class="form-label" for="habit-desc-input">Description <span class="optional">(optional)</span></label>
+      <input
+        id="habit-desc-input"
+        class="form-input"
+        type="text"
+        placeholder="e.g. 15 minutes of silence"
+        maxlength="80"
+        autocomplete="off"
+      />
+      <!-- Schedule -->
+      <label class="form-label schedule-label">Schedule</label>
+      <div class="freq-chips" id="freq-chips" role="group" aria-label="Frequency">
+        <button type="button" class="freq-chip active" data-freq="daily" aria-pressed="true">Daily</button>
+        <button type="button" class="freq-chip" data-freq="weekdays" aria-pressed="false">Weekdays</button>
+        <button type="button" class="freq-chip" data-freq="weekends" aria-pressed="false">Weekends</button>
+        <button type="button" class="freq-chip" data-freq="onetime" aria-pressed="false">One-Time</button>
+        <button type="button" class="freq-chip" data-freq="custom" aria-pressed="false">Custom</button>
+      </div>
+      <!-- One-Time Panel -->
+      <div id="freq-onetime-panel" class="freq-panel hidden">
+        <label class="form-label">Select date</label>
+        <div class="onetime-cal-header">
+          <button type="button" class="onetime-nav-btn" id="onetime-prev-btn" aria-label="Previous month">
+            <span class="material-symbols-outlined">chevron_left</span>
+          </button>
+          <span class="onetime-month-label" id="onetime-month-label">April 2026</span>
+          <button type="button" class="onetime-nav-btn" id="onetime-next-btn" aria-label="Next month">
+            <span class="material-symbols-outlined">chevron_right</span>
+          </button>
+        </div>
+        <div class="onetime-cal-grid-header">
+          <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+        </div>
+        <div class="onetime-cal-grid" id="onetime-cal-grid"></div>
+        <input type="hidden" id="onetime-date-input" />
+      </div>
+      <!-- Custom Panel -->
+      <div id="freq-custom-panel" class="freq-panel hidden">
+        <label class="form-label">Repeat on</label>
+        <div class="day-toggles" id="day-toggles" role="group" aria-label="Days of week">
+          <button type="button" class="day-toggle" data-day="0" aria-pressed="false">S</button>
+          <button type="button" class="day-toggle" data-day="1" aria-pressed="false">M</button>
+          <button type="button" class="day-toggle" data-day="2" aria-pressed="false">T</button>
+          <button type="button" class="day-toggle" data-day="3" aria-pressed="false">W</button>
+          <button type="button" class="day-toggle" data-day="4" aria-pressed="false">T</button>
+          <button type="button" class="day-toggle" data-day="5" aria-pressed="false">F</button>
+          <button type="button" class="day-toggle" data-day="6" aria-pressed="false">S</button>
+        </div>
+        <label class="form-label" style="margin-top:14px;">Monthly pattern <span class="optional">(optional)</span></label>
+        <div class="monthly-chips" id="monthly-chips" role="group" aria-label="Monthly pattern">
+          <button type="button" class="monthly-chip active" data-val="">None</button>
+          <button type="button" class="monthly-chip" data-val="first">1st of month</button>
+          <button type="button" class="monthly-chip" data-val="last">Last day</button>
+          <button type="button" class="monthly-chip" data-val="first-weekday">First weekday</button>
+          <button type="button" class="monthly-chip" data-val="first-weekend">First weekend</button>
+        </div>
+      </div>
+      <!-- Icon -->
+      <label class="form-label" style="margin-top: 20px;">Icon</label>
+      <div class="icon-picker" id="icon-picker"><!-- JS renders icons --></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" id="btn-cancel-modal">Cancel</button>
+      <button class="btn-confirm" id="btn-add-habit">Add Intention</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: EDIT HABIT
+═══════════════════════════════════════════ -->
+<div id="edit-modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+    <div class="modal-header">
+      <h2 class="modal-title" id="edit-modal-title">Edit Habit</h2>
+      <button class="modal-close" aria-label="Close" id="edit-modal-close-btn">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="form-label" for="edit-habit-name-input">Habit name</label>
+      <input
+        id="edit-habit-name-input"
+        class="form-input"
+        type="text"
+        placeholder="e.g. Morning Meditation"
+        maxlength="60"
+        autocomplete="off"
+      />
+      <label class="form-label" for="edit-habit-desc-input">Description <span class="optional">(optional)</span></label>
+      <input
+        id="edit-habit-desc-input"
+        class="form-input"
+        type="text"
+        placeholder="e.g. 15 minutes of silence"
+        maxlength="80"
+        autocomplete="off"
+      />
+      <!-- Schedule -->
+      <label class="form-label schedule-label">Schedule</label>
+      <div class="freq-chips" id="edit-freq-chips" role="group" aria-label="Frequency">
+        <button type="button" class="freq-chip active" data-freq="daily" aria-pressed="true">Daily</button>
+        <button type="button" class="freq-chip" data-freq="weekdays" aria-pressed="false">Weekdays</button>
+        <button type="button" class="freq-chip" data-freq="weekends" aria-pressed="false">Weekends</button>
+        <button type="button" class="freq-chip" data-freq="onetime" aria-pressed="false">One-Time</button>
+        <button type="button" class="freq-chip" data-freq="custom" aria-pressed="false">Custom</button>
+      </div>
+      <!-- One-Time Panel -->
+      <div id="edit-freq-onetime-panel" class="freq-panel hidden">
+        <label class="form-label">Select date</label>
+        <div class="onetime-cal-header">
+          <button type="button" class="onetime-nav-btn" id="edit-onetime-prev-btn" aria-label="Previous month">
+            <span class="material-symbols-outlined">chevron_left</span>
+          </button>
+          <span class="onetime-month-label" id="edit-onetime-month-label">April 2026</span>
+          <button type="button" class="onetime-nav-btn" id="edit-onetime-next-btn" aria-label="Next month">
+            <span class="material-symbols-outlined">chevron_right</span>
+          </button>
+        </div>
+        <div class="onetime-cal-grid-header">
+          <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+        </div>
+        <div class="onetime-cal-grid" id="edit-onetime-cal-grid"></div>
+        <input type="hidden" id="edit-onetime-date-input" />
+      </div>
+      <!-- Custom Panel -->
+      <div id="edit-freq-custom-panel" class="freq-panel hidden">
+        <label class="form-label">Repeat on</label>
+        <div class="day-toggles" id="edit-day-toggles" role="group" aria-label="Days of week">
+          <button type="button" class="day-toggle" data-day="0" aria-pressed="false">S</button>
+          <button type="button" class="day-toggle" data-day="1" aria-pressed="false">M</button>
+          <button type="button" class="day-toggle" data-day="2" aria-pressed="false">T</button>
+          <button type="button" class="day-toggle" data-day="3" aria-pressed="false">W</button>
+          <button type="button" class="day-toggle" data-day="4" aria-pressed="false">T</button>
+          <button type="button" class="day-toggle" data-day="5" aria-pressed="false">F</button>
+          <button type="button" class="day-toggle" data-day="6" aria-pressed="false">S</button>
+        </div>
+        <label class="form-label" style="margin-top:14px;">Monthly pattern <span class="optional">(optional)</span></label>
+        <div class="monthly-chips" id="edit-monthly-chips" role="group" aria-label="Monthly pattern">
+          <button type="button" class="monthly-chip active" data-val="">None</button>
+          <button type="button" class="monthly-chip" data-val="first">1st of month</button>
+          <button type="button" class="monthly-chip" data-val="last">Last day</button>
+          <button type="button" class="monthly-chip" data-val="first-weekday">First weekday</button>
+          <button type="button" class="monthly-chip" data-val="first-weekend">First weekend</button>
+        </div>
+      </div>
+      <!-- Icon -->
+      <label class="form-label" style="margin-top: 20px;">Icon</label>
+      <div class="icon-picker" id="edit-icon-picker">
+        <!-- JS renders icons -->
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" id="btn-cancel-edit">Cancel</button>
+      <button class="btn-confirm" id="btn-save-edit">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: EDIT HISTORY ENTRY
+═══════════════════════════════════════════ -->
+<div id="history-modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
+    <div class="modal-header">
+      <h2 class="modal-title" id="history-modal-title">Edit Entry</h2>
+      <button class="modal-close" aria-label="Close" id="history-modal-close-btn">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p id="history-modal-date" class="journal-date-label" style="margin-bottom: 8px;"></p>
+      <div id="history-habit-info" class="detail-no-entries" style="display:none; padding: 0 0 12px; border:none; color:var(--sage); font-weight:600; text-align:left; font-style:normal;"></div>
+      <textarea id="history-edit-textarea" class="journal-textarea" placeholder="What would you like to update?"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" id="btn-cancel-history">Cancel</button>
+      <button class="btn-confirm" id="btn-save-history">Save Entry</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     CUSTOM CONFIRM DIALOG
+═══════════════════════════════════════════ -->
+<div id="confirm-overlay" class="confirm-overlay hidden">
+  <div class="confirm-dialog" id="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <h3 class="confirm-dialog-title" id="confirm-title">Are you sure?</h3>
+    <p class="confirm-dialog-message" id="confirm-message">This action cannot be undone.</p>
+    <div class="confirm-dialog-actions">
+      <button class="btn-confirm-cancel" id="confirm-cancel">Cancel</button>
+      <button class="btn-confirm-action" id="confirm-action">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: CALENDAR
+═══════════════════════════════════════════ -->
+<div id="calendar-modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="calendar-modal" role="dialog" aria-modal="true" aria-labelledby="calendar-modal-title">
+    <div class="modal-header cal-modal-header">
+      <div class="modal-calendar-pickers">
+        <button class="cal-month-prev-btn" id="modal-cal-prev" aria-label="Previous month">
+          <span class="material-symbols-outlined">chevron_left</span>
+        </button>
+        <span class="cal-month-label" id="cal-month-label">April 2026</span>
+        <button class="cal-month-next-btn" id="modal-cal-next" aria-label="Next month">
+          <span class="material-symbols-outlined">chevron_right</span>
+        </button>
+      </div>
+    </div>
+    <div class="modal-body" style="padding-bottom: 24px; padding-top: 0;">
+      <div class="calendar-grid-header">
+        <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+      </div>
+      <div class="calendar-grid-days" id="calendar-grid-days">
+        <!-- JS renders dates here -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: JOURNAL ARCHIVE
+═══════════════════════════════════════════ -->
+<div id="journal-archive-modal-overlay" class="modal-overlay hidden">
+  <div class="modal modal-tall" id="journal-archive-modal" role="dialog" aria-modal="true" aria-labelledby="journal-archive-title">
+    <div class="modal-header" style="flex-direction: column; align-items: stretch; gap: 16px;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <h2 class="modal-title" id="journal-archive-title">Journal Archive</h2>
+        <button class="modal-close" aria-label="Close archive" id="journal-archive-close-btn">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div class="archive-search-container">
+        <span class="material-symbols-outlined archive-search-icon">search</span>
+        <input type="text" id="archive-search-input" class="archive-search-input" placeholder="Search your journal..." />
+      </div>
+      <div class="archive-tabs">
+        <button class="archive-tab active" data-tab="general">General</button>
+        <button class="archive-tab" data-tab="habits">Habit Notes</button>
+      </div>
+    </div>
+    <div class="modal-body modal-body-scroll" id="journal-archive-feed" style="background:var(--bg); padding-top: 16px;">
+      <!-- JS renders the grouped archive here -->
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     TUTORIAL OVERLAY
+═══════════════════════════════════════════ -->
+<div id="tutorial-overlay" class="tutorial-overlay hidden">
+  <div id="tutorial-spotlight" class="tutorial-spotlight"></div>
+  <div id="tutorial-text-container" class="tutorial-text-container">
+    <p id="tutorial-text" class="tutorial-text"></p>
+    <p class="tutorial-continue-hint">Tap anywhere to continue</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     TOAST NOTIFICATION
+═══════════════════════════════════════════ -->
+<div id="toast" class="toast hidden" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
