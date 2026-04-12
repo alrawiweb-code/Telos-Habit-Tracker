@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "586803424168",
+    "project_id": "telos-habit",
+    "storage_bucket": "telos-habit.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:586803424168:android:629a111e6698183da70b9d",
+        "android_client_info": {
+          "package_name": "com.alrawi.telos"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "586803424168-f3cho6n5dhn4nehiipspm2dcfpc16i5c.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.alrawi.telos",
+            "certificate_hash": "5659ef5b1832a6c4c5f3b915b65566aa9fd95f8b"
+          }
+        },
+        {
+          "client_id": "586803424168-immdsrcbvbfb748g4ehj3n4a35j57lh6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.alrawi.telos",
+            "certificate_hash": "4b7f013a340e51e63fd683a999b45cb643bfafbc"
+          }
+        },
+        {
+          "client_id": "586803424168-5ncvtuiithal5372l5f9hg8jgdn4239f.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBoAWMlqhrlvarON6H7usfTLykqmYuaFb4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "586803424168-5ncvtuiithal5372l5f9hg8jgdn4239f.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -2,8 +2,8 @@
 <resources>
     <string name="app_name">Telos</string>
     <string name="title_activity_main">Telos</string>
-    <string name="package_name">telos.app</string>
-    <string name="custom_url_scheme">telos.app</string>
+    <string name="package_name">com.alrawi.telos</string>
+    <string name="custom_url_scheme">com.alrawi.telos</string>
     <string name="widget_description_big">Track your habits and mark them as complete on a spacious, large-screen layout.</string>
     <string name="widget_description_std">A compact, standard-sized tracker to keep your intentions visible on any home screen.</string>
 </resources>

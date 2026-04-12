@@ -1,4 +1,4 @@
-package telos.app;
+package com.alrawi.telos;
 
 import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
@@ -9,10 +9,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import android.content.Context;
-import telos.app.TelosWidgetProvider;
-import telos.app.TelosWidgetProviderDark;
-import telos.app.TelosWidgetProviderStandard;
-import telos.app.TelosWidgetProviderDarkStandard;
+
+
+
+
 
 @CapacitorPlugin(name = "WidgetPlugin")
 public class WidgetPlugin extends Plugin {

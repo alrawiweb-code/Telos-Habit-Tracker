@@ -1,4 +1,4 @@
-package telos.app;
+package com.alrawi.telos;
 
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
@@ -13,10 +13,10 @@ import android.content.ComponentName;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
+public class TelosWidgetProviderStandard extends AppWidgetProvider {
 
-    public static final String ACTION_TOGGLE_HABIT_DARK_STANDARD = "telos.app.ACTION_TOGGLE_HABIT_DARK_STANDARD";
-    public static final String ACTION_REFRESH_WIDGET = "telos.app.ACTION_REFRESH_WIDGET";
+    public static final String ACTION_TOGGLE_HABIT_STANDARD = "com.alrawi.telos.ACTION_TOGGLE_HABIT_STANDARD";
+    public static final String ACTION_REFRESH_WIDGET = "com.alrawi.telos.ACTION_REFRESH_WIDGET";
 
     @Override
     public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
@@ -26,7 +26,7 @@ public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
     }
 
     static void updateAppWidget(Context context, AppWidgetManager appWidgetManager, int appWidgetId) {
-        RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_main_dark_standard);
+        RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_main_standard);
 
         // Calculate progress from CapacitorStorage
         SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
@@ -58,8 +58,8 @@ public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
             views.setTextViewText(R.id.widget_subtitle, completed + " of " + total + " complete.");
         }
 
-        // Set up the intent that starts the WidgetServiceDarkStandard
-        Intent intent = new Intent(context, WidgetServiceDarkStandard.class);
+        // Set up the intent that starts the WidgetServiceStandard
+        Intent intent = new Intent(context, WidgetServiceStandard.class);
         intent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
         intent.setData(Uri.parse(intent.toUri(Intent.URI_INTENT_SCHEME) + "/" + appWidgetId));
         views.setRemoteAdapter(R.id.widget_list_view, intent);
@@ -69,21 +69,21 @@ public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
         Intent addIntent = new Intent(context, MainActivity.class);
         addIntent.setAction(Intent.ACTION_VIEW);
         addIntent.setData(Uri.parse("telos://action?type=add_intention"));
-        PendingIntent pendingAdd = PendingIntent.getActivity(context, 6, addIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pendingAdd = PendingIntent.getActivity(context, 4, addIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.btn_add_intention, pendingAdd);
 
         // Add Journal
         Intent journalIntent = new Intent(context, MainActivity.class);
         journalIntent.setAction(Intent.ACTION_VIEW);
         journalIntent.setData(Uri.parse("telos://action?type=add_journal"));
-        PendingIntent pendingJournal = PendingIntent.getActivity(context, 7, journalIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pendingJournal = PendingIntent.getActivity(context, 5, journalIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.btn_add_journal, pendingJournal);
 
         // Template for list item clicks
-        Intent toggleIntent = new Intent(context, TelosWidgetProviderDarkStandard.class);
-        toggleIntent.setAction(ACTION_TOGGLE_HABIT_DARK_STANDARD);
+        Intent toggleIntent = new Intent(context, TelosWidgetProviderStandard.class);
+        toggleIntent.setAction(ACTION_TOGGLE_HABIT_STANDARD);
         toggleIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
-        PendingIntent pendingToggle = PendingIntent.getBroadcast(context, 5, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+        PendingIntent pendingToggle = PendingIntent.getBroadcast(context, 4, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
         views.setPendingIntentTemplate(R.id.widget_list_view, pendingToggle);
 
         appWidgetManager.updateAppWidget(appWidgetId, views);
@@ -93,7 +93,7 @@ public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
     public void onReceive(Context context, Intent intent) {
         super.onReceive(context, intent);
 
-        if (ACTION_TOGGLE_HABIT_DARK_STANDARD.equals(intent.getAction())) {
+        if (ACTION_TOGGLE_HABIT_STANDARD.equals(intent.getAction())) {
             String habitId = intent.getStringExtra("EXTRA_HABIT_ID");
             if (habitId != null) {
                 toggleHabitNatively(context, habitId);
@@ -141,6 +141,15 @@ public class TelosWidgetProviderDarkStandard extends AppWidgetProvider {
                 }
             }
             prefs.edit().putString("widget_data", arr.toString()).commit();
+            
+            // Sync with app
+            String pendingRaw = prefs.getString("widget_pending_toggles", "[]");
+            JSONArray pending = new JSONArray(pendingRaw);
+            JSONObject toggle = new JSONObject();
+            toggle.put("id", habitId);
+            toggle.put("ts", System.currentTimeMillis());
+            pending.put(toggle);
+            prefs.edit().putString("widget_pending_toggles", pending.toString()).commit();
         } catch (Exception e) {}
     }
 }

@@ -1,4 +1,4 @@
-package telos.app;
+package com.alrawi.telos;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;

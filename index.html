@@ -234,6 +234,17 @@
         <span class="material-symbols-outlined chevron">chevron_right</span>
       </div>
 
+      <div class="menu-item" id="menu-cloud-sync" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon" style="color: var(--calm-blue, #6fa3ef);">cloud_sync</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Cloud Sync & Account</p>
+            <p class="menu-item-sub">Google Sign-In and backups</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
       <div class="menu-item danger" id="btn-clear-data-menu" role="button" tabindex="0">
         <div class="menu-item-content">
           <span class="material-symbols-outlined menu-icon">delete_forever</span>
@@ -243,6 +254,114 @@
           </div>
         </div>
         <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: CLOUD SYNC & BACKUP
+═══════════════════════════════════════════ -->
+<div id="screen-cloud-sync" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-cloud" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">Account & Sync</h2>
+      <p class="page-subtitle">Peace of mind, everywhere.</p>
+    </div>
+  </div>
+  <main class="profile-main cloud-sync-main">
+    <div class="sync-benefit-card">
+      <span class="material-symbols-outlined sync-benefit-icon">cloud_done</span>
+      <p class="sync-benefit-text">Keep your habits tracking flawlessly and store your journals safely. Bring your journey anywhere with Google Sign-In.</p>
+    </div>
+
+    <!-- LOGGED OUT STATE -->
+    <div id="cloud-logged-out" class="cloud-state-panel">
+      <button class="btn-google-sign-in" id="btn-google-sign-in">
+        <svg class="google-icon" viewBox="0 0 48 48"><g><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path><path fill="none" d="M0 0h48v48H0z"></path></g></svg>
+        Sign in with Google
+      </button>
+    </div>
+
+    <!-- LOGGED IN STATE -->
+    <div id="cloud-logged-in" class="cloud-state-panel hidden">
+      <div class="cloud-user-profile">
+        <span class="material-symbols-outlined profile-avatar">account_circle</span>
+        <div class="profile-details">
+          <p class="profile-email" id="profile-email">email@example.com</p>
+          <p class="profile-status">Connected and secured</p>
+        </div>
+      </div>
+
+      <div class="sync-toggles-section">
+        <h3 class="section-heading" style="margin-bottom:2px;">What to Backup</h3>
+        <p class="notif-section-sub">Choose what data moves to the cloud.</p>
+        
+        <div class="notif-card" style="margin-top: 16px;">
+          <label class="sync-checkbox-row">
+            <span class="sync-checkbox-label">Intentions & Streaks</span>
+            <input type="checkbox" id="sync-intentions" class="custom-checkbox" checked />
+          </label>
+          <label class="sync-checkbox-row">
+            <span class="sync-checkbox-label">Daily Journals</span>
+            <input type="checkbox" id="sync-journals" class="custom-checkbox" checked />
+          </label>
+        </div>
+      </div>
+
+      <div class="sync-auto-section" style="margin-top: 24px;">
+        <div class="notif-section-header">
+          <div>
+            <h3 class="section-heading" style="margin-bottom:2px;">Auto-Sync</h3>
+            <p class="notif-section-sub">Automatically backup behind the scenes.</p>
+          </div>
+          <label class="toggle-switch" aria-label="Enable Auto Sync">
+            <input type="checkbox" id="sync-auto-toggle" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+        
+        <div id="sync-frequency-panel" class="notif-sub-panel hidden">
+          <div class="notif-time-row" style="padding-top: 8px;">
+            <span class="notif-time-label">Frequency</span>
+            <select id="sync-frequency" class="sync-dropdown">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="sync-metadata-grid">
+        <div class="sync-meta-card">
+          <span class="sync-meta-label">Local Data</span>
+          <span class="sync-meta-value" id="local-sync-date">Never</span>
+        </div>
+        <div class="sync-meta-card">
+          <span class="sync-meta-label">Cloud Backup</span>
+          <span class="sync-meta-value" id="cloud-sync-date">Never</span>
+        </div>
+      </div>
+
+      <div class="sync-actions-section" style="margin-top: 24px; display: flex; flex-direction: column; gap: 12px;">
+        <button class="btn-primary btn-sync" id="btn-backup-now">
+          <span class="material-symbols-outlined">cloud_upload</span> Backup Now
+        </button>
+        <button class="btn-secondary btn-sync" id="btn-restore-now">
+          <span class="material-symbols-outlined">cloud_download</span> Restore from Cloud
+        </button>
+      </div>
+
+
+
+      <div class="danger-zone" style="margin-top: 40px;">
+        <button class="btn-clear" id="btn-sign-out">
+          <span class="material-symbols-outlined">logout</span>
+          Sign Out
+        </button>
       </div>
     </div>
   </main>
@@ -831,6 +950,48 @@
 ═══════════════════════════════════════════ -->
 <div id="toast" class="toast hidden" aria-live="polite"></div>
 
+<!-- ═══════════════════════════════════════════
+     SYNC CONFLICT MODAL
+═══════════════════════════════════════════ -->
+<div id="conflict-modal-overlay" class="conflict-modal-overlay hidden">
+  <div class="conflict-modal">
+    <button class="conflict-close-btn" id="btn-conflict-close" aria-label="Close">
+      <span class="material-symbols-outlined">close</span>
+    </button>
+    <div class="conflict-header">
+      <div class="conflict-icon-badge">
+        <span class="material-symbols-outlined">sync_problem</span>
+      </div>
+      <h2 class="conflict-title">Data Conflict</h2>
+      <p class="conflict-desc">Your local data and cloud backup have diverged. Choose which version to keep.</p>
+    </div>
+
+    <div class="conflict-options">
+      <button class="conflict-option" id="btn-keep-local">
+        <div class="conflict-option-top">
+          <span class="material-symbols-outlined conflict-option-icon">smartphone</span>
+          <span class="conflict-option-label">Keep Local</span>
+        </div>
+        <span class="conflict-option-time" id="conflict-local-date">Modified: --</span>
+        <span class="conflict-option-hint">Overwrites cloud with your device data</span>
+      </button>
+
+      <button class="conflict-option" id="btn-keep-cloud">
+        <div class="conflict-option-top">
+          <span class="material-symbols-outlined conflict-option-icon">cloud</span>
+          <span class="conflict-option-label">Keep Cloud</span>
+        </div>
+        <span class="conflict-option-time" id="conflict-cloud-date">Modified: --</span>
+        <span class="conflict-option-hint">Overwrites device with cloud data</span>
+      </button>
+    </div>
+
+    <button class="conflict-cancel-btn" id="btn-conflict-cancel">Cancel</button>
+  </div>
+</div>
+
 <script type="module" src="app.js"></script>
 </body>
 </html>
+
+

@@ -11,6 +11,12 @@ import { registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 
+// Firebase & Cloud Sync
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { auth, db, signInWithCredential, GoogleAuthProvider } from './firebaseConfig.js';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+
 const WidgetPlugin = registerPlugin('WidgetPlugin');
 
 // ─── Constants ────────────────────────────────
@@ -221,6 +227,7 @@ function bindEventListeners() {
       if (document.getElementById('screen-all-habits') && document.getElementById('screen-all-habits').classList.contains('active')) { switchScreen('profile'); return; }
       if (document.getElementById('screen-notif-settings') && document.getElementById('screen-notif-settings').classList.contains('active')) { switchScreen('profile'); return; }
       if (document.getElementById('screen-about') && document.getElementById('screen-about').classList.contains('active')) { switchScreen('profile'); return; }
+      if (document.getElementById('screen-cloud-sync') && document.getElementById('screen-cloud-sync').classList.contains('active')) { switchScreen('profile'); return; }
       if (document.getElementById('screen-privacy') && document.getElementById('screen-privacy').classList.contains('active')) { switchScreen('profile'); return; }
 
       // 3. Exit app if at top level
@@ -294,6 +301,7 @@ function bindEventListeners() {
   // Profile Menu Navigation
   document.getElementById('menu-all-habits').addEventListener('click', () => switchScreen('all-habits'));
   document.getElementById('menu-notif-settings').addEventListener('click', () => switchScreen('notif-settings'));
+  document.getElementById('menu-cloud-sync').addEventListener('click', () => switchScreen('cloud-sync'));
   document.getElementById('menu-about').addEventListener('click', () => switchScreen('about'));
   document.getElementById('menu-privacy').addEventListener('click', () => {
     switchScreen('privacy');
@@ -306,6 +314,7 @@ function bindEventListeners() {
   // Sub-screen back buttons
   document.getElementById('btn-back-habits').addEventListener('click', () => switchScreen('profile'));
   document.getElementById('btn-back-notif').addEventListener('click', () => switchScreen('profile'));
+  document.getElementById('btn-back-cloud').addEventListener('click', () => switchScreen('profile'));
   document.getElementById('btn-back-about').addEventListener('click', () => switchScreen('profile'));
   document.getElementById('btn-back-privacy').addEventListener('click', () => switchScreen('profile'));
 
@@ -448,6 +457,10 @@ function save() {
     localStorage.setItem(STORAGE_KEY_JOURNAL,       JSON.stringify(journal));
     localStorage.setItem(STORAGE_KEY_HABIT_JOURNAL, JSON.stringify(habitJournal));
     localStorage.setItem(STORAGE_KEY_NOTIF,         JSON.stringify(notifSettings));
+
+    // Track local modification time for cloud sync dirty-checking
+    cloudSyncState.localLastModified = Date.now();
+    saveCloudSyncState();
     
     // Sync to Android widget via high-priority synchronous bridge
     const todayStr = todayKey();
@@ -2778,4 +2791,455 @@ function finishTutorial() {
     }
   }, 800);
 }
+
+/* ═══════════════════════════════════════════
+   CLOUD SYNC & BACKUP LOGIC
+═══════════════════════════════════════════ */
+const SYNC_TIMEOUT = 30000; // 30 seconds — generous for slow connections
+
+async function withTimeout(promise, ms = SYNC_TIMEOUT) {
+  const timeout = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error('Sync timed out. Please check your connection.')), ms)
+  );
+  return Promise.race([promise, timeout]);
+}
+
+// Retry wrapper for Firestore overwrites — exponential backoff
+async function retryableSetDoc(ref, data, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await withTimeout(setDoc(ref, data));
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+    }
+  }
+}
+
+// Retry wrapper for Firestore merge writes (metadata only)
+async function retryableMergeDoc(ref, data, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await withTimeout(setDoc(ref, data, { merge: true }));
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+    }
+  }
+}
+
+let cloudUser = null;
+let cloudSyncState = {
+  autoSync: false,
+  frequency: 'daily',
+  syncIntentions: true,
+  syncJournals: true,
+  lastSyncTime: 0,
+  localLastModified: 0,
+  cloudLastModified: 0
+};
+
+// Load Sync State
+try {
+  const savedState = localStorage.getItem('telos_cloud_sync');
+  if (savedState) Object.assign(cloudSyncState, JSON.parse(savedState));
+} catch(e) {}
+
+function saveCloudSyncState() {
+  localStorage.setItem('telos_cloud_sync', JSON.stringify(cloudSyncState));
+}
+
+function formatSyncDate(ts) {
+  if (!ts) return "Never";
+  const date = new Date(ts);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  
+  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return `Today, ${timeStr}`;
+  
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + `, ${timeStr}`;
+}
+
+/**
+ * Updates the visual state of a sync button
+ * @param {string} btnId - ID of the button
+ * @param {boolean} isLoading - Is it currently working?
+ * @param {boolean} isSuccess - Should it show success briefly?
+ */
+function setLoadingState(btnId, isLoading, isSuccess = false) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+
+  const icon = btn.querySelector('.material-symbols-outlined');
+  const textNode = Array.from(btn.childNodes).find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+  
+  if (isLoading) {
+    btn.classList.add('loading');
+    btn.disabled = true;
+    if (icon) icon.textContent = 'sync';
+    if (textNode) {
+      if (btnId === 'btn-backup-now') textNode.textContent = ' Backing up...';
+      if (btnId === 'btn-restore-now') textNode.textContent = ' Synchronizing...';
+    }
+  } else if (isSuccess) {
+    btn.classList.remove('loading');
+    btn.classList.add('success');
+    if (icon) icon.textContent = 'done_all';
+    if (textNode) textNode.textContent = ' Done';
+    
+    setTimeout(() => {
+      btn.classList.remove('success');
+      btn.disabled = false;
+      if (icon) icon.textContent = btnId === 'btn-backup-now' ? 'cloud_upload' : 'cloud_download';
+      if (textNode) textNode.textContent = btnId === 'btn-backup-now' ? ' Backup Now' : ' Restore from Cloud';
+    }, 2000);
+  } else {
+    btn.classList.remove('loading');
+    btn.classList.remove('success');
+    btn.disabled = false;
+    if (icon) icon.textContent = btnId === 'btn-backup-now' ? 'cloud_upload' : 'cloud_download';
+    if (textNode) textNode.textContent = btnId === 'btn-backup-now' ? ' Backup Now' : ' Restore from Cloud';
+  }
+}
+
+
+function updateCloudUI() {
+  const loggedOutPanel = document.getElementById('cloud-logged-out');
+  const loggedInPanel = document.getElementById('cloud-logged-in');
+  if (!loggedOutPanel || !loggedInPanel) return;
+
+  if (cloudUser) {
+    loggedOutPanel.classList.add('hidden');
+    loggedInPanel.classList.remove('hidden');
+    document.getElementById('profile-email').textContent = cloudUser.email || 'Google User';
+
+    // Update settings
+    document.getElementById('sync-intentions').checked = cloudSyncState.syncIntentions;
+    document.getElementById('sync-journals').checked = cloudSyncState.syncJournals;
+    document.getElementById('sync-auto-toggle').checked = cloudSyncState.autoSync;
+    
+    const freqPanel = document.getElementById('sync-frequency-panel');
+    if (cloudSyncState.autoSync) {
+      freqPanel.classList.remove('hidden');
+      document.getElementById('sync-frequency').value = cloudSyncState.frequency;
+    } else {
+      freqPanel.classList.add('hidden');
+    }
+
+    // Update Timestamps
+    const localSyncEl = document.getElementById('local-sync-date');
+    const cloudSyncEl = document.getElementById('cloud-sync-date');
+    if (localSyncEl) localSyncEl.textContent = formatSyncDate(cloudSyncState.localLastModified);
+    if (cloudSyncEl) cloudSyncEl.textContent = formatSyncDate(cloudSyncState.cloudLastModified);
+
+  } else {
+    loggedOutPanel.classList.remove('hidden');
+    loggedInPanel.classList.add('hidden');
+  }
+}
+
+async function handleGoogleSignIn() {
+  try {
+    const result = await FirebaseAuthentication.signInWithGoogle({
+      webClientId: '586803424168-5ncvtuiithal5372l5f9hg8jgdn4239f.apps.googleusercontent.com',
+    });
+    if (result.credential?.idToken) {
+      const credential = GoogleAuthProvider.credential(result.credential.idToken);
+      await signInWithCredential(auth, credential);
+    }
+  } catch (err) {
+    console.error("Google Auth Error:", err);
+    // Display the specific error message to help diagnose the issue (e.g. Code 10, 12500, etc.)
+    const detailedError = err.message || JSON.stringify(err);
+    showToast(`Sign in failed. Error: ${detailedError}`);
+  }
+}
+
+async function handleSignOut() {
+  try {
+    await FirebaseAuthentication.signOut();
+    await signOut(auth);
+    cloudUser = null;
+    updateCloudUI();
+    showToast("Signed out successfully.");
+  } catch (err) {
+    console.error("Sign Out Error:", err);
+  }
+}
+
+async function backupToCloud(silent = false) {
+  if (!cloudUser) return;
+  const uid = cloudUser.uid;
+
+  try {
+    if (!silent) setLoadingState('btn-backup-now', true);
+
+    // O(1) dirty-check: compare local modification time vs last successful sync
+    const isDataDirty = cloudSyncState.localLastModified > cloudSyncState.lastSyncTime;
+
+    if (!isDataDirty) {
+      if (!silent) {
+        showToast("Cloud is already up to date.");
+        setLoadingState('btn-backup-now', false, true);
+      }
+      return;
+    }
+
+    const timestamp = Date.now();
+    const promises = [];
+
+    // Core data — plain overwrite (no merge) for maximum speed
+    if (cloudSyncState.syncIntentions) {
+      const coreRef = doc(db, 'users', uid, 'sync', 'core');
+      promises.push(retryableSetDoc(coreRef, {
+        habits, logs, notifSettings, lastModified: timestamp
+      }));
+    }
+
+    // Journal data — plain overwrite (no merge) for maximum speed
+    if (cloudSyncState.syncJournals) {
+      const journalRef = doc(db, 'users', uid, 'sync', 'journals');
+      promises.push(retryableSetDoc(journalRef, {
+        journal, habitJournal, lastModified: timestamp
+      }));
+    }
+
+    // Metadata — merge is fine here (tiny doc, preserves other fields)
+    const baseRef = doc(db, 'users', uid);
+    promises.push(retryableMergeDoc(baseRef, {
+      lastModified: timestamp,
+      updatedAt: serverTimestamp(),
+      platform: 'android'
+    }));
+
+    await Promise.all(promises);
+
+    // Use the backup timestamp (not Date.now()) so changes made DURING
+    // the upload are correctly detected as dirty on the next sync
+    cloudSyncState.lastSyncTime = timestamp;
+    cloudSyncState.cloudLastModified = timestamp;
+    saveCloudSyncState();
+
+    if (!silent) {
+      setLoadingState('btn-backup-now', false, true);
+      updateCloudUI();
+    }
+  } catch (err) {
+    console.error("Backup Error:", err);
+    if (!silent) {
+      showToast(err.message || "Backup failed.");
+      setLoadingState('btn-backup-now', false);
+    }
+  }
+}
+
+async function restoreFromCloud() {
+  if (!cloudUser) return;
+  const uid = cloudUser.uid;
+
+  try {
+    setLoadingState('btn-restore-now', true);
+
+    const coreRef = doc(db, 'users', uid, 'sync', 'core');
+    const journalRef = doc(db, 'users', uid, 'sync', 'journals');
+    const baseRef = doc(db, 'users', uid);
+
+    const [baseSnap, coreSnap, journalSnap] = await withTimeout(Promise.all([
+      getDoc(baseRef),
+      getDoc(coreRef),
+      getDoc(journalRef)
+    ]));
+
+    let cloudData = {};
+    let cloudTS = 0;
+
+    if (coreSnap.exists()) {
+      cloudData = { ...coreSnap.data() };
+      if (journalSnap.exists()) {
+        const jData = journalSnap.data();
+        cloudData.journal = jData.journal;
+        cloudData.habitJournal = jData.habitJournal;
+      }
+      cloudTS = cloudData.lastModified || 0;
+    } else if (baseSnap.exists() && baseSnap.data().habits) {
+      // Legacy single-doc fallback
+      cloudData = baseSnap.data();
+      cloudTS = cloudData.lastModified || 0;
+    } else {
+      showToast("No backup found in cloud.");
+      setLoadingState('btn-restore-now', false);
+      return;
+    }
+
+    const localTS = cloudSyncState.localLastModified || 0;
+
+    // Only show conflict if BOTH timestamps exist and diverge
+    if (localTS > 0 && cloudTS > 0 && Math.abs(cloudTS - localTS) > 5000) {
+      showConflictModal(localTS, cloudTS, cloudData);
+      setLoadingState('btn-restore-now', false);
+      return;
+    }
+
+    await applyCloudData(cloudData);
+    setLoadingState('btn-restore-now', false, true);
+
+  } catch (err) {
+    console.error("Restore Error:", err);
+    showToast(err.message || "Restore failed.");
+    setLoadingState('btn-restore-now', false);
+  }
+}
+
+async function applyCloudData(data) {
+  if (data.habits && cloudSyncState.syncIntentions) {
+    habits = data.habits;
+    logs = data.logs || {};
+    if (data.notifSettings) Object.assign(notifSettings, data.notifSettings);
+  }
+  
+  if (data.journal && cloudSyncState.syncJournals) {
+    journal = data.journal;
+    habitJournal = data.habitJournal || {};
+  }
+
+  save(); // This updates local timestamp & UI
+  
+  cloudSyncState.lastSyncTime = Date.now();
+  cloudSyncState.cloudLastModified = data.lastModified || Date.now();
+  saveCloudSyncState();
+  
+  renderHabits();
+  renderJournal();
+  showToast("Cloud data applied.");
+}
+
+/* Conflict Resolution UI Helpers */
+let pendingCloudData = null;
+
+function showConflictModal(localTS, cloudTS, cloudData) {
+  pendingCloudData = cloudData;
+  const overlay = document.getElementById('conflict-modal-overlay');
+  if (!overlay) return;
+
+  document.getElementById('conflict-local-date').textContent = `Modified: ${formatSyncDate(localTS)}`;
+  document.getElementById('conflict-cloud-date').textContent = `Modified: ${formatSyncDate(cloudTS)}`;
+  
+  // Visual emphasis on newer (recommended) version
+  const localBtn = document.getElementById('btn-keep-local');
+  const cloudBtn = document.getElementById('btn-keep-cloud');
+  
+  localBtn.classList.remove('recommended');
+  cloudBtn.classList.remove('recommended');
+
+  if (localTS >= cloudTS) localBtn.classList.add('recommended');
+  else cloudBtn.classList.add('recommended');
+
+  overlay.classList.remove('hidden');
+
+  // Setup Button Handlers — capture data reference BEFORE closeConflictModal clears it
+  localBtn.onclick = () => {
+    closeConflictModal();
+    backupToCloud();
+  };
+
+  cloudBtn.onclick = () => {
+    const data = pendingCloudData; // Capture ref before close nullifies it
+    closeConflictModal();
+    if (data) applyCloudData(data);
+  };
+
+  // Close/Cancel buttons
+  const closeBtn = document.getElementById('btn-conflict-close');
+  const cancelBtn = document.getElementById('btn-conflict-cancel');
+  
+  if (closeBtn) closeBtn.onclick = () => closeConflictModal();
+  if (cancelBtn) cancelBtn.onclick = () => closeConflictModal();
+}
+
+function closeConflictModal() {
+  const overlay = document.getElementById('conflict-modal-overlay');
+  if (overlay) overlay.classList.add('hidden');
+  pendingCloudData = null;
+}
+
+
+async function checkAutoSync() {
+  if (!cloudUser || !cloudSyncState.autoSync) return;
+  
+  const now = Date.now();
+  const diff = now - (cloudSyncState.lastSyncTime || 0);
+  
+  const dailyMs = 24 * 60 * 60 * 1000;
+  const weeklyMs = 7 * dailyMs;
+  
+  const threshold = cloudSyncState.frequency === 'weekly' ? weeklyMs : dailyMs;
+  
+  if (diff > threshold) {
+    await backupToCloud(true);
+  }
+}
+
+async function syncRemoteMetadata() {
+  if (!cloudUser) return;
+  try {
+    const docRef = doc(db, 'users', cloudUser.uid);
+    // Lightweight fetch for metadata
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.lastModified) {
+        cloudSyncState.cloudLastModified = data.lastModified;
+        saveCloudSyncState();
+        updateCloudUI();
+      }
+    }
+  } catch (e) {
+    console.warn("Metadata sync failed:", e);
+  }
+}
+
+onAuthStateChanged(auth, (user) => {
+  cloudUser = user;
+  updateCloudUI();
+  if (user) {
+    syncRemoteMetadata();
+    checkAutoSync();
+  }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-google-sign-in')?.addEventListener('click', handleGoogleSignIn);
+  document.getElementById('btn-sign-out')?.addEventListener('click', handleSignOut);
+  document.getElementById('btn-backup-now')?.addEventListener('click', () => backupToCloud(false));
+  document.getElementById('btn-restore-now')?.addEventListener('click', restoreFromCloud);
+
+  const intentionsCb = document.getElementById('sync-intentions');
+  if (intentionsCb) intentionsCb.addEventListener('change', (e) => {
+    cloudSyncState.syncIntentions = e.target.checked;
+    saveCloudSyncState();
+  });
+
+  const journalsCb = document.getElementById('sync-journals');
+  if (journalsCb) journalsCb.addEventListener('change', (e) => {
+    cloudSyncState.syncJournals = e.target.checked;
+    saveCloudSyncState();
+  });
+
+  const autoToggle = document.getElementById('sync-auto-toggle');
+  const freqPanel = document.getElementById('sync-frequency-panel');
+  if (autoToggle) autoToggle.addEventListener('change', (e) => {
+    cloudSyncState.autoSync = e.target.checked;
+    if (e.target.checked) freqPanel.classList.remove('hidden');
+    else freqPanel.classList.add('hidden');
+    saveCloudSyncState();
+  });
+
+  const freqSelect = document.getElementById('sync-frequency');
+  if (freqSelect) freqSelect.addEventListener('change', (e) => {
+    cloudSyncState.frequency = e.target.value;
+    saveCloudSyncState();
+  });
+});
+
 

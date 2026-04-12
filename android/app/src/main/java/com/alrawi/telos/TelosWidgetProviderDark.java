@@ -1,4 +1,4 @@
-package telos.app;
+package com.alrawi.telos;
 
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
@@ -15,8 +15,8 @@ import org.json.JSONObject;
 
 public class TelosWidgetProviderDark extends AppWidgetProvider {
 
-    public static final String ACTION_TOGGLE_HABIT_DARK = "telos.app.ACTION_TOGGLE_HABIT_DARK";
-    public static final String ACTION_REFRESH_WIDGET = "telos.app.ACTION_REFRESH_WIDGET";
+    public static final String ACTION_TOGGLE_HABIT_DARK = "com.alrawi.telos.ACTION_TOGGLE_HABIT_DARK";
+    public static final String ACTION_REFRESH_WIDGET = "com.alrawi.telos.ACTION_REFRESH_WIDGET";
 
     @Override
     public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {

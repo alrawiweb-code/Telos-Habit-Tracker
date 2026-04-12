@@ -13,6 +13,7 @@
     "vite": "^5.0.0"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^8.2.0",
     "@capacitor/android": "^8.3.0",
     "@capacitor/app": "^8.1.0",
     "@capacitor/core": "^8.3.0",
@@ -20,6 +21,7 @@
     "@capacitor/local-notifications": "^8.0.2",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/status-bar": "^8.0.2",
+    "firebase": "^12.12.0",
     "three": "^0.183.2"
   }
 }

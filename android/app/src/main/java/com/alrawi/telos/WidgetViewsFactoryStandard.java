@@ -1,4 +1,4 @@
-package telos.app;
+package com.alrawi.telos;
 
 import android.content.Context;
 import android.content.Intent;

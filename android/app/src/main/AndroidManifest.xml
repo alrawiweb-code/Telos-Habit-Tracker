@@ -43,7 +43,7 @@
         <receiver android:name=".TelosWidgetProvider" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="telos.app.ACTION_TOGGLE_HABIT" />
+                <action android:name="com.alrawi.telos.ACTION_TOGGLE_HABIT" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
@@ -52,7 +52,7 @@
         <receiver android:name=".TelosWidgetProviderDark" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="telos.app.ACTION_TOGGLE_HABIT_DARK" />
+                <action android:name="com.alrawi.telos.ACTION_TOGGLE_HABIT_DARK" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info_dark" />
@@ -62,7 +62,7 @@
         <receiver android:name=".TelosWidgetProviderStandard" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="telos.app.ACTION_TOGGLE_HABIT_STANDARD" />
+                <action android:name="com.alrawi.telos.ACTION_TOGGLE_HABIT_STANDARD" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info_standard" />
@@ -71,7 +71,7 @@
         <receiver android:name=".TelosWidgetProviderDarkStandard" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="telos.app.ACTION_TOGGLE_HABIT_DARK_STANDARD" />
+                <action android:name="com.alrawi.telos.ACTION_TOGGLE_HABIT_DARK_STANDARD" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info_dark_standard" />

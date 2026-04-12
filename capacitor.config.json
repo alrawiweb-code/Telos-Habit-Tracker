@@ -1,5 +1,11 @@
 {
-  "appId": "telos.app",
+  "appId": "com.alrawi.telos",
   "appName": "Telos",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": false,
+      "providers": ["google.com"]
+    }
+  }
 }
