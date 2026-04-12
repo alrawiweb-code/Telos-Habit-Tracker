@@ -867,6 +867,60 @@
 </div>
 
 <!-- ═══════════════════════════════════════════
+     MODAL: CLEAR DATA OPTIONS
+═══════════════════════════════════════════ -->
+<div id="clear-data-modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="clear-data-modal" role="dialog" aria-modal="true" aria-labelledby="clear-data-title">
+    <div class="modal-header">
+      <h2 class="modal-title" id="clear-data-title">Clear Data</h2>
+      <button class="modal-close" aria-label="Close clear data" id="btn-close-clear-data">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="modal-body" style="padding-top: 16px;">
+      <p class="modal-desc" style="color: var(--slate); font-size: 15px; margin-bottom: 24px;">Choose what data you want to permanently delete. This cannot be undone.</p>
+      
+      <div class="clear-options-container" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px;">
+        <label class="clear-option-card">
+          <input type="radio" name="clear-target" value="local" class="clear-radio" checked>
+          <div class="clear-option-content">
+            <span class="material-symbols-outlined clear-icon">smartphone</span>
+            <div class="clear-text">
+              <span class="clear-title">Local Data Only</span>
+              <span class="clear-desc">Deletes habits and logs from this device. Cloud backup remains safe.</span>
+            </div>
+          </div>
+        </label>
+
+        <label class="clear-option-card">
+          <input type="radio" name="clear-target" value="cloud" class="clear-radio">
+          <div class="clear-option-content">
+            <span class="material-symbols-outlined clear-icon">cloud_off</span>
+            <div class="clear-text">
+              <span class="clear-title">Cloud Backup Only</span>
+              <span class="clear-desc">Deletes your backup from the server. Local data is kept.</span>
+            </div>
+          </div>
+        </label>
+
+        <label class="clear-option-card danger-option">
+          <input type="radio" name="clear-target" value="both" class="clear-radio">
+          <div class="clear-option-content">
+            <span class="material-symbols-outlined clear-icon" style="color: var(--error);">delete_forever</span>
+            <div class="clear-text">
+              <span class="clear-title" style="color: var(--error);">Both Local & Cloud</span>
+              <span class="clear-desc">Wipes absolutely everything. Cannot be recovered.</span>
+            </div>
+          </div>
+        </label>
+      </div>
+
+      <button class="btn-confirm destructive" id="btn-execute-clear" style="width: 100%;">Delete Selected Data</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
      CUSTOM CONFIRM DIALOG
 ═══════════════════════════════════════════ -->
 <div id="confirm-overlay" class="confirm-overlay hidden">

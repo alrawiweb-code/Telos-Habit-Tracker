@@ -15,7 +15,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { auth, db, signInWithCredential, GoogleAuthProvider } from './firebaseConfig.js';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
 const WidgetPlugin = registerPlugin('WidgetPlugin');
 
@@ -1582,21 +1582,28 @@ function renderProfile() {
   // Streak: consecutive days where all SCHEDULED habits are done
   let streak = 0;
   const d = new Date();
-  while (true) {
+  const earliestDate = habits.reduce((min, h) => (h.createdAt && h.createdAt < min ? h.createdAt : min), todayStr);
+  let lookbackLimit = 365; // Don't go back more than a year
+
+  while (lookbackLimit > 0) {
     const k = dateKey(d);
+    if (k < earliestDate) break;
+
     const dayLog = logs[k] || {};
     const scheduled = habits.filter(h => shouldShowHabit(h, k));
+    
     if (scheduled.length === 0) {
       // No habits scheduled — skip this day, don't break streak
       d.setDate(d.getDate() - 1);
-      // Safety: don't loop forever if no habits exist
-      if (streak === 0 && d < new Date(Date.now() - 365 * 86400000)) break;
+      lookbackLimit--;
       continue;
     }
+
     const doneCount = scheduled.filter(h => dayLog[h.id]).length;
     if (doneCount > 0) {
       streak++;
       d.setDate(d.getDate() - 1);
+      lookbackLimit--;
     } else {
       break;
     }
@@ -1729,21 +1736,72 @@ async function deleteHabit(id, name) {
   });
 }
 
-async function confirmClear() {
-  const confirmed = await showConfirm(
-    'Clear All Data',
-    'This will permanently remove all habits, logs, and journal entries. This cannot be undone.',
-    'Clear Everything',
-    true
-  );
-  if (!confirmed) return;
+function confirmClear() {
+  const overlay = document.getElementById('clear-data-modal-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
 
-  habits = []; logs = {}; journal = {}; habitJournal = {};
-  save();
-  renderHabits();
-  renderProfile();
-  renderJournal();
-  showToast('All data cleared.');
+  // Reset to local by default
+  const localRadio = document.querySelector('input[name="clear-target"][value="local"]');
+  if (localRadio) localRadio.checked = true;
+
+  const closeBtn = document.getElementById('btn-close-clear-data');
+  const confirmBtn = document.getElementById('btn-execute-clear');
+
+  const cleanup = () => {
+    overlay.classList.add('hidden');
+    closeBtn.removeEventListener('click', handleClose);
+    confirmBtn.removeEventListener('click', handleConfirm);
+  };
+
+  const handleClose = () => cleanup();
+
+  const handleConfirm = async () => {
+    cleanup();
+    const targetEl = document.querySelector('input[name="clear-target"]:checked');
+    if (!targetEl) return;
+    const target = targetEl.value;
+
+    let clearedMessages = [];
+
+    // Local Data
+    if (target === 'local' || target === 'both') {
+      habits = []; logs = {}; journal = {}; habitJournal = {};
+      save();
+      clearedMessages.push('Local data');
+    }
+
+    // Cloud Data
+    if (target === 'cloud' || target === 'both') {
+      if (cloudUser) {
+        try {
+          const docRef = doc(db, 'users', cloudUser.uid);
+          await deleteDoc(docRef);
+          cloudSyncState.lastSyncTime = 0;
+          cloudSyncState.cloudLastModified = 0;
+          saveCloudSyncState();
+          clearedMessages.push('Cloud backup');
+        } catch (e) {
+          console.error("Failed to delete cloud backup:", e);
+          showToast("Failed to delete cloud backup.");
+        }
+      } else if (target === 'cloud') {
+        showToast("Not signed in. No cloud data to delete.");
+        return;
+      }
+    }
+
+    if (clearedMessages.length > 0) {
+      showToast(`${clearedMessages.join(' & ')} cleared.`);
+    }
+
+    renderHabits();
+    renderProfile();
+    renderJournal();
+  };
+
+  closeBtn.addEventListener('click', handleClose);
+  confirmBtn.addEventListener('click', handleConfirm);
 }
 
 // ─── Navigation (with transitions) ───────────
