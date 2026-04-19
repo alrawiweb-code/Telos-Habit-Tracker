@@ -16,6 +16,8 @@ import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { auth, db, signInWithCredential, GoogleAuthProvider } from './firebaseConfig.js';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { PageFlip } from 'page-flip';
+
 
 const WidgetPlugin = registerPlugin('WidgetPlugin');
 
@@ -25,6 +27,13 @@ const STORAGE_KEY_LOGS           = 'ee_logs_v2';
 const STORAGE_KEY_JOURNAL        = 'ee_journal_v2';
 const STORAGE_KEY_HABIT_JOURNAL  = 'ee_habit_journal_v1';
 const STORAGE_KEY_NOTIF          = 'ee_notif_v1';
+const SYSTEM_INTRO_ENTRY = {
+  text: "Welcome to your personal sanctuary. This is a space for your thoughts, reflections, and growth.",
+  ts: 1, // Ensure it's the absolute first
+  images: ["/9c7abbb33e2e3c415d3ba97fe8ff186b.jpg"],
+  audio: { data: "/Vinland Saga [AMV] - Chubina ge (1).mp3" },
+  isSystem: true
+};
 
 const DAY_LABELS    = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const MONTH_NAMES   = ['January','February','March','April','May','June',
@@ -38,11 +47,489 @@ const HABIT_ICONS = [
   'laptop', 'calendar_today', 'coffee',
 ];
 
+// ─── Media Services ───────────────────────────
+const ImageCompressor = {
+  async compress(file, maxWidth = 1200, quality = 0.7) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          if (width > maxWidth) {
+            height = (maxWidth / width) * height;
+            width = maxWidth;
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+};
+
+// ─── Microphone Permission Service ────────────
+// Handles permission check + request across Web & Android Capacitor WebView.
+// States: 'granted' | 'prompt' | 'denied' | 'unavailable'
+const MicPermissionService = {
+  // Cached state — reset to null when we want a fresh check
+  _cachedState: null,
+
+  /**
+   * Returns current mic permission state without triggering a OS prompt.
+   * Uses Permissions API where available; falls back to 'prompt' (unknown).
+   */
+  async getState() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      return 'unavailable';
+    }
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const result = await navigator.permissions.query({ name: 'microphone' });
+        this._cachedState = result.state; // 'granted' | 'prompt' | 'denied'
+        // Live-update our cache if permission changes while app is open
+        result.onchange = () => {
+          this._cachedState = result.state;
+          this._onPermissionChange(result.state);
+        };
+        return result.state;
+      }
+    } catch (e) {
+      // Permissions API not supported (some Android WebViews) — fall through
+      console.warn('Permissions API unavailable, will probe via getUserMedia:', e.message);
+    }
+    // Return cached state if we have one, otherwise unknown
+    return this._cachedState || 'prompt';
+  },
+
+  /**
+   * Actually requests microphone access by calling getUserMedia.
+   * Returns { granted: bool, stream } — caller must stop the stream tracks.
+   */
+  async request() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this._cachedState = 'granted';
+      return { granted: true, stream };
+    } catch (err) {
+      // NotAllowedError → user denied; NotFoundError → no mic hardware
+      const denied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+      this._cachedState = denied ? 'denied' : 'unavailable';
+      console.warn('getUserMedia failed:', err.name, err.message);
+      return { granted: false, stream: null, error: err };
+    }
+  },
+
+  /** Called when the Permissions API fires an onchange event */
+  _onPermissionChange(newState) {
+    const btns = [
+      document.getElementById('journal-mic-btn'),
+      document.getElementById('detail-mic-btn')
+    ];
+    btns.forEach(btn => {
+      if (!btn) return;
+      btn.classList.toggle('perm-denied', newState === 'denied');
+      btn.title = newState === 'denied'
+        ? 'Microphone access denied — tap to learn more'
+        : 'Record Voice';
+    });
+  }
+};
+
+// ─── Mic Permission Modal ─────────────────────
+// Shows a bottom-sheet explaining why mic is needed.
+// Resolves true (user wants to try) or false (dismissed).
+function showMicPermissionModal({ isDenied = false } = {}) {
+  return new Promise(resolve => {
+    const overlay  = document.getElementById('mic-permission-overlay');
+    const hint     = document.getElementById('mic-perm-denied-hint');
+    const allowBtn = document.getElementById('mic-perm-allow');
+    const cancelBtn= document.getElementById('mic-perm-cancel');
+    const settingsBtn = document.getElementById('mic-perm-settings');
+    const body     = document.getElementById('mic-perm-body');
+    if (!overlay) { resolve(false); return; }
+
+    // Adapt text + buttons for each state
+    if (isDenied) {
+      body.textContent = 'Microphone access is currently blocked. Enable it in your device settings to record voice notes.';
+      hint.classList.remove('hidden');
+      allowBtn.classList.add('hidden');   // Can't prompt again if permanently denied
+      settingsBtn.classList.remove('hidden');
+    } else {
+      body.textContent = 'To record voice notes for your journal, Telos needs access to your microphone. Your recordings are stored only on your device.';
+      hint.classList.add('hidden');
+      allowBtn.classList.remove('hidden');
+      settingsBtn.classList.add('hidden');
+    }
+
+    overlay.classList.remove('hidden');
+    // Trap focus on the primary button
+    setTimeout(() => (isDenied ? cancelBtn : allowBtn).focus(), 80);
+
+    const close = (result) => {
+      overlay.classList.add('hidden');
+      allowBtn.onclick = null;
+      cancelBtn.onclick = null;
+      settingsBtn.onclick = null;
+      overlay.removeEventListener('click', onBackdrop);
+      resolve(result);
+    };
+
+    const onBackdrop = (e) => { if (e.target === overlay) close(false); };
+
+    allowBtn.onclick  = () => close(true);
+    cancelBtn.onclick = () => close(false);
+    settingsBtn.onclick = () => {
+      // Deep-link to Android app settings — works in Capacitor WebView.
+      // On plain browser this is a no-op but won't throw.
+      try {
+        window.location.href = 'app-settings:';
+      } catch(e) {
+        // Fallback for older Android intents
+        try { window.open('package:com.alrawi.telos'); } catch(ex) {}
+      }
+      close(false);
+    };
+    overlay.addEventListener('click', onBackdrop);
+  });
+}
+
+// ─── Voice Service ─────────────────────────────
+const VoiceService = {
+  recognition: null,
+  mediaRecorder: null,
+  audioChunks: [],
+  isRecording: false,
+
+  init() {
+    try {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        this.recognition = new SpeechRecognition();
+        this.recognition.continuous = true;
+        this.recognition.interimResults = true;
+      }
+    } catch (e) {
+      console.warn('SpeechRecognition init skipped:', e);
+      this.recognition = null;
+    }
+  },
+
+  start(stream, onResult, onStop) {
+    // stream is pre-obtained by handleMicClick after permission was confirmed
+    if (this.isRecording) return;
+    this.isRecording = true;
+    this.audioChunks = [];
+
+    // Speech-to-text — optional, skip if unavailable
+    if (this.recognition) {
+      try {
+        this.recognition.onresult = (event) => {
+          let transcript = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            transcript += event.results[i][0].transcript;
+          }
+          onResult(transcript);
+        };
+        this.recognition.onerror = (err) => console.warn('Speech Recognition Error:', err);
+        this.recognition.start();
+      } catch (e) {
+        console.warn('Speech recognition start failed:', e);
+      }
+    }
+
+    try {
+      this.mediaRecorder = new MediaRecorder(stream);
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.audioChunks.push(e.data);
+      };
+      this.mediaRecorder.onstop = () => {
+        try {
+          const blob = new Blob(this.audioChunks, { type: 'audio/webm' });
+          const reader = new FileReader();
+          reader.onloadend = () => onStop(reader.result, blob.type);
+          reader.onerror = () => { console.error('FileReader error'); onStop(null, null); };
+          reader.readAsDataURL(blob);
+        } catch (e) {
+          console.error('Audio blob processing failed:', e);
+          onStop(null, null);
+        }
+        stream.getTracks().forEach(t => t.stop());
+      };
+      this.mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        this.isRecording = false;
+        stream.getTracks().forEach(t => t.stop());
+      };
+      this.mediaRecorder.start();
+    } catch (e) {
+      console.error('MediaRecorder init failed:', e);
+      stream.getTracks().forEach(t => t.stop());
+      this.isRecording = false;
+      if (this.recognition) try { this.recognition.stop(); } catch(ex) {}
+      showToast('⚠ Audio recording failed to start.');
+    }
+  },
+
+  stop() {
+    if (!this.isRecording) return;
+    this.isRecording = false;
+    if (this.recognition) try { this.recognition.stop(); } catch(e) {}
+    try {
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+      }
+    } catch (e) {
+      console.warn('MediaRecorder stop failed:', e);
+    }
+  }
+};
+
+// ─── Media Handlers ───────────────────────────
+function bindMediaEvents() {
+  // Journal Screen
+  const journalMicBtn = document.getElementById('journal-mic-btn');
+  const journalPhotoBtn = document.getElementById('journal-photo-btn');
+  const journalPhotoInput = document.getElementById('journal-photo-input');
+
+  if (journalMicBtn) journalMicBtn.addEventListener('click', () => handleMicClick('journal'));
+  if (journalPhotoBtn) journalPhotoBtn.addEventListener('click', () => journalPhotoInput.click());
+  if (journalPhotoInput) journalPhotoInput.addEventListener('change', (e) => handleFileChange('journal', e.target.files));
+
+  // Habit Detail Screen
+  const detailMicBtn = document.getElementById('detail-mic-btn');
+  const detailPhotoBtn = document.getElementById('detail-photo-btn');
+  const detailPhotoInput = document.getElementById('detail-photo-input');
+
+  if (detailMicBtn) detailMicBtn.addEventListener('click', () => handleMicClick('detail'));
+  if (detailPhotoBtn) detailPhotoBtn.addEventListener('click', () => detailPhotoInput.click());
+  if (detailPhotoInput) detailPhotoInput.addEventListener('change', (e) => handleFileChange('detail', e.target.files));
+}
+
+async function handleMicClick(prefix) {
+  // ── Stop if already recording ──
+  if (VoiceService.isRecording) {
+    VoiceService.stop();
+    stopRecordingUI(prefix);
+    return;
+  }
+
+  // ── Check current permission state without prompting ──
+  let permState;
+  try {
+    permState = await MicPermissionService.getState();
+  } catch(e) {
+    permState = 'prompt'; // Assume unknown → will try getUserMedia
+  }
+
+  if (permState === 'unavailable') {
+    showToast('⚠ Audio recording is not supported on this device.');
+    return;
+  }
+
+  if (permState === 'denied') {
+    // Already permanently denied — show modal with settings hint
+    await showMicPermissionModal({ isDenied: true });
+    return;
+  }
+
+  // We directly request the mic (triggers OS dialog if state was 'prompt')
+  // bypassing the custom explanation modal for a smoother UX.
+
+
+  // ── Actually request the mic (triggers OS dialog if state was 'prompt') ──
+  const { granted, stream } = await MicPermissionService.request();
+
+  if (!granted) {
+    // User denied the OS dialog — update button + show modal with settings hint
+    MicPermissionService._onPermissionChange('denied');
+    await showMicPermissionModal({ isDenied: true });
+    return;
+  }
+
+  // ── Permission granted — start recording ──
+  if (currentAttachments[prefix]) {
+    currentAttachments[prefix].audio = null;
+  }
+  startRecordingUI(prefix);
+
+  try {
+    VoiceService.start(
+      stream,
+      (transcript) => {
+        try {
+          const ta = document.getElementById(
+            prefix === 'journal' ? 'journal-textarea' : 'detail-journal-textarea'
+          );
+          if (ta && transcript.trim()) {
+            const s = ta.selectionStart, e = ta.selectionEnd, t = ta.value;
+            ta.value = t.slice(0, s) + transcript + t.slice(e);
+            ta.selectionStart = ta.selectionEnd = s + transcript.length;
+          }
+        } catch(e) { console.warn('Transcript insertion failed:', e); }
+      },
+      (audioData, type) => {
+        try {
+          if (audioData && currentAttachments[prefix]) {
+            currentAttachments[prefix].audio = { data: audioData, type: type };
+            updateMediaPreview(prefix);
+          }
+        } catch(e) { console.warn('Audio save failed:', e); }
+        stopRecordingUI(prefix);
+      }
+    );
+  } catch(e) {
+    console.error('Mic handler error:', e);
+    VoiceService.isRecording = false;
+    stopRecordingUI(prefix);
+    showToast('⚠ Recording error. Please try again.');
+  }
+}
+
+async function handleFileChange(prefix, files) {
+  if (!files || files.length === 0) return;
+  if (!currentAttachments[prefix]) return;
+
+  for (let file of files) {
+    try {
+      const compressed = await ImageCompressor.compress(file);
+      currentAttachments[prefix].images.push(compressed);
+    } catch (err) {
+      console.error("Compression failed:", err);
+    }
+  }
+  updateMediaPreview(prefix);
+  const input = document.getElementById(`${prefix}-photo-input`);
+  if (input) input.value = ''; // Reset for same file re-selection
+}
+
+function updateMediaPreview(prefix) {
+  const container = document.getElementById(`${prefix}-attachments-preview`);
+  if (!container || !currentAttachments[prefix]) return;
+  container.innerHTML = '';
+
+  const media = currentAttachments[prefix];
+  const hasMedia = media.images.length > 0 || !!media.audio;
+
+  // Show/hide the container
+  container.classList.toggle('hidden', !hasMedia);
+
+  // Render Images
+  media.images.forEach((img, idx) => {
+    const item = document.createElement('div');
+    item.className = 'attachment-item';
+    const imgEl = document.createElement('img');
+    imgEl.src = img;
+    imgEl.alt = 'Attachment';
+    imgEl.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;cursor:pointer;';
+    imgEl.addEventListener('click', () => expandJournalImage(img));
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '×';
+    removeBtn.style.cssText = 'position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;line-height:1;z-index:2;';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeAttachmentByUI(prefix, idx, 'image');
+    });
+    item.appendChild(imgEl);
+    item.appendChild(removeBtn);
+    container.appendChild(item);
+  });
+
+  // Render Audio
+  if (media.audio) {
+    const item = document.createElement('div');
+    item.className = 'attachment-item audio';
+    item.style.cssText = 'display:flex;align-items:center;justify-content:center;background:var(--greige);';
+    item.innerHTML = `<div class="audio-icon" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;"><span class="material-symbols-outlined" style="font-size:28px;color:var(--sage);">mic</span></div>`;
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '×';
+    removeBtn.style.cssText = 'position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;line-height:1;z-index:2;';
+    removeBtn.addEventListener('click', () => removeAttachmentByUI(prefix, 0, 'audio'));
+    item.appendChild(removeBtn);
+    container.appendChild(item);
+  }
+}
+
+function removeAttachmentByUI(prefix, index, type) {
+  if (!currentAttachments[prefix]) return;
+  if (type === 'image') {
+    currentAttachments[prefix].images.splice(index, 1);
+  } else {
+    currentAttachments[prefix].audio = null;
+  }
+  updateMediaPreview(prefix);
+}
+window.removeAttachmentByUI = removeAttachmentByUI;
+
+function startRecordingUI(prefix) {
+  const btn = document.getElementById(`${prefix}-mic-btn`);
+  const indicator = document.getElementById(`${prefix}-rec-indicator`);
+  const timer = document.getElementById(`${prefix}-rec-timer`);
+
+  if (btn) btn.classList.add('recording');
+  if (indicator) indicator.classList.remove('hidden');
+  if (timer) {
+    timer.classList.remove('hidden');
+    timer.textContent = '0:00';
+  }
+
+  recordingStartTime = Date.now();
+  if (recordingTimerInterval) clearInterval(recordingTimerInterval);
+  recordingTimerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    if (timer) timer.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+  }, 1000);
+}
+
+function stopRecordingUI(prefix) {
+  const btn = document.getElementById(`${prefix}-mic-btn`);
+  const indicator = document.getElementById(`${prefix}-rec-indicator`);
+  const timer = document.getElementById(`${prefix}-rec-timer`);
+
+  if (btn) btn.classList.remove('recording');
+  if (indicator) indicator.classList.add('hidden');
+  if (timer) timer.classList.add('hidden');
+  if (recordingTimerInterval) clearInterval(recordingTimerInterval);
+}
+
+function resetMediaAttachments(prefix) {
+  if (currentAttachments[prefix]) {
+    currentAttachments[prefix] = { images: [], audio: null };
+  }
+  const container = document.getElementById(`${prefix}-attachments-preview`);
+  if (container) container.innerHTML = '';
+  stopRecordingUI(prefix);
+}
+
 // ─── State ────────────────────────────────────
 let habits       = [];   // [{ id, name, desc, icon, schedule, createdAt }]
 let logs         = {};   // { "YYYY-MM-DD": { habitId: true } }
-let journal      = {};   // { "YYYY-MM-DD": [{text, ts}] }
-let habitJournal = {};   // { habitId: { "YYYY-MM-DD": [{text, ts}] } }
+let journal      = {};   // { "YYYY-MM-DD": [{text, ts, images, audio}] }
+let habitJournal = {};   // { habitId: { "YYYY-MM-DD": [{text, ts, images, audio}] } }
+let journalPageFlip = null; // StPageFlip instance
+let isJournalFlipping = false; // Prevents re-renders during active animations
+let pendingJournalRender = false; // Queues a re-render when flip finishes
+
+// Media selection state (split by context)
+let currentAttachments = {
+  journal: { images: [], audio: null },
+  detail: { images: [], audio: null }
+};
+let recordingStartTime = 0;
+let recordingTimerInterval = null;
 
 let notifSettings = {
   enabled: false,
@@ -66,8 +553,7 @@ let confirmResolve  = null;
 let historyEditContext = { key: null, habitId: null, index: null };
 let stripCenterDate     = todayKey(); 
 let modalViewingDate    = new Date();
-let momentumState = { velocity: 0, offset: 0, frame: null, lastT: 0, isDragging: false };
-const PIXELS_PER_DAY = 60; // Approximate width of a day cell + gap
+
 
 // Schedule state for add modal
 let selectedFreq        = 'daily';
@@ -141,17 +627,22 @@ document.addEventListener('DOMContentLoaded', () => {
   loadData();
   startWidgetSync(); // Start live polling for widget toggles
   buildCalendar();
+  bindStripTouch();
   renderHabits();
   setupScrollHeader();
-  renderJournal();
   renderProfile();
   renderIconPicker('icon-picker');
   bindEventListeners();
+  bindJournalSlider();
   bindScheduleUI();
   bindEditScheduleUI();
   renderNotifications();
   bindNotifUI();
   applyTheme();
+
+  // Initialize Media Services
+  VoiceService.init();
+  bindMediaEvents();
 
   // Set up native notification channel + tap handler
   setupNotifChannel();
@@ -160,7 +651,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Re-schedule notifications if they were previously enabled
   // (runs silently on native; no-ops gracefully on web)
   if (notifSettings.enabled) {
-    scheduleNotifications().catch(() => {});
+    scheduleNotifications(true).catch(() => {});
   }
 
   // Configure native status bar
@@ -196,14 +687,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const splash = document.getElementById('splash-screen');
   if (splash) {
     if (!localStorage.getItem('telos_onboarded')) {
-      // Skip splash on first install to jump straight into onboarding
       splash.remove();
     } else {
-      setTimeout(() => {
-        splash.classList.add('fade-out');
-        // Remove from DOM after transition
-        setTimeout(() => splash.remove(), 1000);
-      }, 1800); // 1.8s feel-good brand presence
+      let splashTimeout;
+      const dismissSplash = () => {
+        if (splashTimeout) clearTimeout(splashTimeout);
+        if (!splash.classList.contains('fade-out')) {
+          splash.classList.add('fade-out');
+          setTimeout(() => splash.remove(), 800); // Wait for transition
+        }
+      };
+
+      // Auto-dismiss after 1.8s
+      splashTimeout = setTimeout(dismissSplash, 1800);
+
+      // Skip on double-tap
+      let lastTap = 0;
+      splash.addEventListener('click', () => {
+        const now = Date.now();
+        if (now - lastTap < 300) {
+          dismissSplash();
+        }
+        lastTap = now;
+      });
     }
   }
 });
@@ -220,6 +726,7 @@ function bindEventListeners() {
       if (document.getElementById('calendar-modal-overlay') && !document.getElementById('calendar-modal-overlay').classList.contains('hidden')) { closeCalendarModal(); return; }
       if (document.getElementById('edit-modal-overlay') && !document.getElementById('edit-modal-overlay').classList.contains('hidden')) { closeEditModal(); return; }
       if (document.getElementById('modal-overlay') && !document.getElementById('modal-overlay').classList.contains('hidden')) { closeAddModal(); return; }
+      if (document.getElementById('journal-expanded-modal') && !document.getElementById('journal-expanded-modal').classList.contains('hidden')) { closeExpandedJournal(); return; }
       if (document.getElementById('journal-archive-modal') && !document.getElementById('journal-archive-modal').classList.contains('hidden')) { closeJournalArchive(); return; }
 
       // 2. Closing inner screens
@@ -276,8 +783,20 @@ function bindEventListeners() {
 
   // Journal
   document.getElementById('btn-save-journal').addEventListener('click', () => saveJournal());
+
+  const jTextarea = document.getElementById('journal-textarea');
+  const jScreen = document.getElementById('screen-journal');
+  // Keyboard tracking is handled globally via body.keyboard-visible listener later in this file
+  
   document.getElementById('btn-browse-journal').addEventListener('click', () => {
     openJournalArchive();
+  });
+  
+  document.getElementById('btn-expand-journal')?.addEventListener('click', () => openExpandedJournal());
+  document.getElementById('btn-save-expanded-journal')?.addEventListener('click', () => saveExpandedJournal());
+
+  document.getElementById('journal-expanded-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'journal-expanded-modal') closeExpandedJournal();
   });
 
   // Habit Detail
@@ -381,6 +900,8 @@ function bindEventListeners() {
         closeHistoryModal();
       } else if (!document.getElementById('calendar-modal-overlay').classList.contains('hidden')) {
         closeCalendarModal();
+      } else if (!document.getElementById('journal-expanded-modal').classList.contains('hidden')) {
+        closeExpandedJournal();
       } else if (!document.getElementById('edit-modal-overlay').classList.contains('hidden')) {
         closeEditModal();
       } else if (!document.getElementById('modal-overlay').classList.contains('hidden')) {
@@ -567,6 +1088,8 @@ try {
       if (notifSettings.enabled) scheduleNotifications().catch(() => {});
     } else {
       stopWidgetSync();
+      // Stop all playing journal audio when app goes to background
+      stopAllJBookAudio(null);
     }
   });
 } catch(e) { /* not on native */ }
@@ -577,23 +1100,477 @@ document.addEventListener("visibilitychange", () => {
         startWidgetSync();
     } else {
         stopWidgetSync();
+        // Stop all playing journal audio when visibility is lost
+        stopAllJBookAudio(null);
     }
 });
 
-// ─── Swipe Navigation ─────────────────────────
-function bindSwipeNavigation() {
-  // Disabled: Native horizontal scroll + scroll-snap used instead
+
+// ─── Journal Navigation Slider ───
+function bindJournalSlider() {
+  const thumb = document.getElementById('journal-nav-thumb');
+  const track = document.getElementById('journal-nav-track');
+  if (!thumb || !track) return;
+
+  let isDragging = false;
+  let trackWidth = 0;
+  let trackLeft = 0;
+  let flipInterval = null;
+  let lastFlipTime = 0;
+  let currentRatio = 0; // Cached drag ratio — avoids getBoundingClientRect per-frame
+
+  const startDrag = (clientX) => {
+    isDragging = true;
+    thumb.classList.add('dragging');
+    const rect = track.getBoundingClientRect();
+    trackWidth = rect.width;
+    trackLeft = rect.left;
+    currentRatio = 0;
+    updateThumbPosition(clientX);
+    loop();
+  };
+
+  const moveDrag = (clientX) => {
+    if (!isDragging) return;
+    updateThumbPosition(clientX);
+  };
+
+  const endDrag = () => {
+    if (!isDragging) return;
+    isDragging = false;
+    thumb.classList.remove('dragging');
+    thumb.style.left = '50%'; // Snap back to center via CSS transition
+    currentRatio = 0;
+    if (flipInterval) {
+      cancelAnimationFrame(flipInterval);
+      flipInterval = null;
+    }
+  };
+
+  const updateThumbPosition = (clientX) => {
+    let x = clientX - trackLeft;
+    if (x < 0) x = 0;
+    if (x > trackWidth) x = trackWidth;
+    thumb.style.left = `${x}px`;
+    // Compute ratio from cached track dimensions — zero layout thrash
+    const center = trackWidth / 2;
+    currentRatio = center > 0 ? (x - center) / center : 0;
+    if (currentRatio < -1) currentRatio = -1;
+    if (currentRatio > 1) currentRatio = 1;
+  };
+
+  const loop = () => {
+    if (!isDragging) return;
+
+    // Use cached currentRatio — no getBoundingClientRect calls per frame
+    if (Math.abs(currentRatio) > 0.15) {
+      const minSpeed = 1200;
+      const maxSpeed = 500;
+      const currentSpeed = minSpeed - ((Math.abs(currentRatio) - 0.15) / 0.85) * (minSpeed - maxSpeed);
+
+      const now = performance.now();
+      if (now - lastFlipTime > currentSpeed) {
+        lastFlipTime = now;
+        
+        if (journalPageFlip) {
+          if (currentRatio > 0) {
+            journalPageFlip.flipNext();
+          } else {
+            journalPageFlip.flipPrev();
+          }
+        }
+      }
+    }
+    
+    flipInterval = requestAnimationFrame(loop);
+  }
+
+  // Mouse events
+  thumb.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startDrag(e.clientX);
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (isDragging) moveDrag(e.clientX);
+  });
+  window.addEventListener('mouseup', () => {
+    endDrag();
+  });
+
+  // Touch events
+  thumb.addEventListener('touchstart', (e) => {
+    startDrag(e.touches[0].clientX);
+  }, { passive: false });
+  window.addEventListener('touchmove', (e) => {
+    if (isDragging) {
+      moveDrag(e.touches[0].clientX);
+      if (e.cancelable) e.preventDefault();
+    }
+  }, { passive: false });
+  window.addEventListener('touchend', () => {
+    endDrag();
+  });
 }
 
-function applyStripTranslation(tx) {}
-function cancelMomentum() {}
-function startMomentum(v) {}
-function snapStrip() {}
-function shiftStrip(delta) {}
-function changeSelectedDate(delta) {}
+// ─── Swipe Navigation ─────────────────────────
+function bindSwipeNavigation() {
+  // Replaced by bindStripTouch() — tactile date strip
+}
+
+// ─── Tactile Date Strip ──────────────────────
+// Custom touch-driven scrolling with momentum, snapping, and haptic ticks
+const STRIP_DAY_WIDTH = 44; // Must match CSS .cal-day width
+const STRIP_FRICTION  = 0.94; // Momentum decay per frame (lower = more friction)
+const STRIP_MIN_VEL   = 0.3;  // Stop momentum below this px/frame
+const STRIP_SNAP_MS   = 280;  // Snap animation duration
+let stripTrack = null;
+let stripOffset = 0; // Current translateX offset (negative = scrolled right)
+let stripDayCount = 0;
+let stripMomentumRAF = null;
+let stripLastTickIndex = -1; // Track which day was last "ticked" for haptic
+let stripTouchState = {
+  startX: 0, startOffset: 0, lastX: 0, lastT: 0, velocity: 0, isDragging: false
+};
+let stripIsSnapping = false;
+
+function applyStripTranslation(tx) {
+  if (stripTrack) {
+    stripTrack.style.transform = `translateX(${tx}px)`;
+  }
+}
+
+function cancelMomentum() {
+  if (stripMomentumRAF) {
+    cancelAnimationFrame(stripMomentumRAF);
+    stripMomentumRAF = null;
+  }
+  stripIsSnapping = false;
+}
+
+/** Fire haptic tick when crossing a day boundary */
+function checkStripTick(offset) {
+  const strip = document.getElementById('calendar-strip');
+  if (!strip) return;
+  const stripW = strip.offsetWidth;
+  const centerOffset = -offset + stripW / 2;
+  const dayIndex = Math.round(centerOffset / STRIP_DAY_WIDTH - 0.5);
+  const clampedIndex = Math.max(0, Math.min(stripDayCount - 1, dayIndex));
+  
+  const days = stripTrack?.querySelectorAll('.cal-day');
+  if (!days) return;
+
+  // Update focused class for the day in the center
+  if (clampedIndex !== stripLastTickIndex) {
+    days.forEach(d => d.classList.remove('focused'));
+    if (days[clampedIndex]) {
+      days[clampedIndex].classList.add('focused');
+      
+      // Haptic tick
+      try { Haptics.impact({ style: ImpactStyle.Light }); } catch(e) {}
+      
+      // Visual tick pulse
+      const el = days[clampedIndex];
+      el.classList.remove('tick-anim');
+      void el.offsetWidth;
+      el.classList.add('tick-anim');
+    }
+  }
+  stripLastTickIndex = clampedIndex;
+
+  // Infinite Scroll: Check if we are near the boundaries
+  if (clampedIndex < 5) {
+    shiftStripWindow(-10);
+  } else if (clampedIndex > 25) {
+    shiftStripWindow(10);
+  }
+}
+
+/**
+ * Shifts the 31-day window by deltaDays and adjusts the offset to be seamless.
+ */
+function shiftStripWindow(deltaDays) {
+  const centerDate = parseDate(stripCenterDate);
+  centerDate.setDate(centerDate.getDate() + deltaDays);
+  stripCenterDate = dateKey(centerDate);
+
+  // Before building, we need to adjust the current offset so the shift is invisible.
+  // New window is shifted by deltaDays, so to keep the same content in place,
+  // we must move the track in the OPPOSITE direction of the window shift.
+  // If we shift window 10 days forward (+10), the indices decrease by 10.
+  // To keep pos, new_offset = old_offset + (10 * width).
+  const shiftPx = deltaDays * STRIP_DAY_WIDTH;
+  stripOffset += shiftPx;
+
+  // If we are currently dragging, we must adjust the startOffset too
+  if (stripTouchState.isDragging) {
+    stripTouchState.startOffset += shiftPx;
+  }
+
+  // Rebuild the calendar without the auto-recenter that would break our manual offset
+  buildCalendar({ skipRecenter: true });
+
+  // Apply the new offset immediately
+  applyStripTranslation(stripOffset);
+}
+
+/** Momentum physics loop — friction-based deceleration */
+function startMomentum(velocity) {
+  cancelMomentum();
+  
+  let vel = velocity;
+  
+  function tick() {
+    vel *= STRIP_FRICTION;
+    
+    if (Math.abs(vel) < STRIP_MIN_VEL) {
+      // Velocity exhausted — snap to nearest date
+      snapStrip();
+      return;
+    }
+    
+    stripOffset += vel;
+    clampStripOffset();
+    applyStripTranslation(stripOffset);
+    checkStripTick(stripOffset);
+    
+    stripMomentumRAF = requestAnimationFrame(tick);
+  }
+  
+  stripMomentumRAF = requestAnimationFrame(tick);
+}
+
+/** Clamp offset so the strip doesn't scroll past its bounds */
+function clampStripOffset() {
+  const strip = document.getElementById('calendar-strip');
+  if (!strip || !stripTrack) return;
+  const stripW = strip.offsetWidth;
+  const trackW = stripDayCount * STRIP_DAY_WIDTH;
+  const minOffset = -(trackW - stripW);
+  const maxOffset = 0;
+  stripOffset = Math.max(minOffset, Math.min(maxOffset, stripOffset));
+}
+
+/** Snap to nearest day cell center with a spring-like animation */
+function snapStrip() {
+  cancelMomentum();
+  stripIsSnapping = true;
+  
+  const strip = document.getElementById('calendar-strip');
+  if (!strip || !stripTrack) return;
+  const stripW = strip.offsetWidth;
+  
+  // Find the day closest to center
+  const centerOffset = -stripOffset + stripW / 2;
+  const nearestIndex = Math.round(centerOffset / STRIP_DAY_WIDTH - 0.5);
+  const clampedIndex = Math.max(0, Math.min(stripDayCount - 1, nearestIndex));
+  
+  // Target offset: position this day at center
+  const targetOffset = -(clampedIndex * STRIP_DAY_WIDTH + STRIP_DAY_WIDTH / 2 - stripW / 2);
+  
+  // Clamp target
+  const trackW = stripDayCount * STRIP_DAY_WIDTH;
+  const minOffset = -(trackW - stripW);
+  const finalTarget = Math.max(minOffset, Math.min(0, targetOffset));
+  
+  // Animate with CSS transition
+  stripTrack.style.transition = `transform ${STRIP_SNAP_MS}ms cubic-bezier(.25,.8,.25,1)`;
+  stripTrack.style.transform = `translateX(${finalTarget}px)`;
+  
+  stripOffset = finalTarget;
+  
+  // After snap completes, select the date and remove transition
+  setTimeout(() => {
+    if (stripTrack) stripTrack.style.transition = 'none';
+    stripIsSnapping = false;
+    
+    // Determine which date was snapped to and select it
+    const days = stripTrack?.querySelectorAll('.cal-day');
+    if (days && days[clampedIndex]) {
+      const key = days[clampedIndex].dataset.dateKey;
+      if (key && key !== selectedDate) {
+        // Haptic feedback for final selection
+        try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(e) {}
+        selectedDate = key;
+        stripCenterDate = key;
+        // Rebuild habits display without rebuilding the strip
+        renderHabits();
+        // Update strip visual selection
+        days.forEach(d => {
+          d.classList.remove('selected');
+          d.classList.remove('focused');
+        });
+        days[clampedIndex].classList.add('selected');
+        days[clampedIndex].classList.add('focused');
+        // Update month label & jump button
+        updateStripHeader();
+      }
+    }
+  }, STRIP_SNAP_MS + 10);
+}
+
+/** Update the month label and Today jump button without rebuilding the strip */
+function updateStripHeader() {
+  const label = document.getElementById('month-label');
+  const jumpBtn = document.getElementById('btn-jump-today');
+  const d = parseDate(selectedDate);
+  
+  label.innerHTML = `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()} <span class="material-symbols-outlined" style="font-size: 16px;">expand_more</span>`;
+  
+  if (selectedDate === todayKey()) {
+    jumpBtn.classList.add('hidden');
+  } else {
+    jumpBtn.classList.remove('hidden');
+  }
+}
+
+function shiftStrip(delta) {
+  changeSelectedDate(delta);
+}
+
+function changeSelectedDate(delta) {
+  const d = parseDate(selectedDate);
+  d.setDate(d.getDate() + delta);
+  selectDate(dateKey(d));
+}
+
+/** Bind touch handlers for the calendar strip */
+function bindStripTouch() {
+  const strip = document.getElementById('calendar-strip');
+  if (!strip) return;
+  
+  strip.addEventListener('touchstart', (e) => {
+    cancelMomentum();
+    const touch = e.touches[0];
+    stripTouchState.startX = touch.clientX;
+    stripTouchState.startOffset = stripOffset;
+    stripTouchState.lastX = touch.clientX;
+    stripTouchState.lastT = performance.now();
+    stripTouchState.velocity = 0;
+    stripTouchState.isDragging = true;
+    
+    if (stripTrack) stripTrack.style.transition = 'none';
+  }, { passive: true });
+  
+  strip.addEventListener('touchmove', (e) => {
+    if (!stripTouchState.isDragging) return;
+    
+    const touch = e.touches[0];
+    const now = performance.now();
+    const dx = touch.clientX - stripTouchState.lastX;
+    const dt = Math.max(1, now - stripTouchState.lastT);
+    
+    // Exponential smoothing for velocity
+    const instantVel = dx / dt * 16; // Normalize to ~60fps frame time
+    stripTouchState.velocity = 0.7 * instantVel + 0.3 * stripTouchState.velocity;
+    
+    stripTouchState.lastX = touch.clientX;
+    stripTouchState.lastT = now;
+    
+    stripOffset = stripTouchState.startOffset + (touch.clientX - stripTouchState.startX);
+    clampStripOffset();
+    applyStripTranslation(stripOffset);
+    checkStripTick(stripOffset);
+  }, { passive: true });
+  
+  strip.addEventListener('touchend', () => {
+    if (!stripTouchState.isDragging) return;
+    stripTouchState.isDragging = false;
+    
+    const vel = stripTouchState.velocity;
+    
+    if (Math.abs(vel) > 1.5) {
+      // Has momentum — start physics loop
+      startMomentum(vel);
+    } else {
+      // Low velocity — just snap
+      snapStrip();
+    }
+  }, { passive: true });
+  
+  // Also handle mouse for desktop testing
+  strip.addEventListener('mousedown', (e) => {
+    cancelMomentum();
+    stripTouchState.startX = e.clientX;
+    stripTouchState.startOffset = stripOffset;
+    stripTouchState.lastX = e.clientX;
+    stripTouchState.lastT = performance.now();
+    stripTouchState.velocity = 0;
+    stripTouchState.isDragging = true;
+    if (stripTrack) stripTrack.style.transition = 'none';
+    e.preventDefault();
+  });
+  
+  window.addEventListener('mousemove', (e) => {
+    if (!stripTouchState.isDragging) return;
+    const now = performance.now();
+    const dx = e.clientX - stripTouchState.lastX;
+    const dt = Math.max(1, now - stripTouchState.lastT);
+    const instantVel = dx / dt * 16;
+    stripTouchState.velocity = 0.7 * instantVel + 0.3 * stripTouchState.velocity;
+    stripTouchState.lastX = e.clientX;
+    stripTouchState.lastT = now;
+    stripOffset = stripTouchState.startOffset + (e.clientX - stripTouchState.startX);
+    clampStripOffset();
+    applyStripTranslation(stripOffset);
+    checkStripTick(stripOffset);
+  });
+  
+  window.addEventListener('mouseup', () => {
+    if (!stripTouchState.isDragging) return;
+    stripTouchState.isDragging = false;
+    const vel = stripTouchState.velocity;
+    if (Math.abs(vel) > 1.5) {
+      startMomentum(vel);
+    } else {
+      snapStrip();
+    }
+  });
+  // Setup observer for initial layout and responsiveness
+  if (!window.calendarResizeObserver) {
+    window.calendarResizeObserver = new ResizeObserver(() => {
+      // Small debounce/raf to ensure layout is ready
+      requestAnimationFrame(() => recenterStrip());
+    });
+    window.calendarResizeObserver.observe(strip);
+  }
+}
+
+/**
+ * Aligns the calendar strip so that the currently selectedDate is centered.
+ * Uses ResizeObserver to handle layout/visibility delays.
+ */
+function recenterStrip() {
+  const strip = document.getElementById('calendar-strip');
+  const track = document.querySelector('.cal-strip-track');
+  if (!strip || !track) return;
+
+  const stripW = strip.offsetWidth;
+  if (stripW === 0) return; // Hidden or not yet rendered
+
+  const allDays = Array.from(track.querySelectorAll('.cal-day'));
+  let selectedIndex = -1;
+  allDays.forEach((el, i) => {
+    if (el.dataset.dateKey === selectedDate) selectedIndex = i;
+  });
+
+  if (selectedIndex === -1) {
+    // If exact date not in current strip, find the closest or default to center
+    selectedIndex = 15;
+  }
+
+  stripOffset = -(selectedIndex * STRIP_DAY_WIDTH + STRIP_DAY_WIDTH / 2 - stripW / 2);
+  clampStripOffset();
+  
+  track.style.transition = 'none';
+  applyStripTranslation(stripOffset);
+  stripLastTickIndex = selectedIndex;
+  
+  // Update visual focus state
+  checkStripTick(stripOffset);
+}
 
 // ─── Calendar Strip ───────────────────────────
-function buildCalendar() {
+function buildCalendar(opts = {}) {
   const strip = document.getElementById('calendar-strip');
   const label = document.getElementById('month-label');
   const jumpBtn = document.getElementById('btn-jump-today');
@@ -616,14 +1593,29 @@ function buildCalendar() {
     jumpBtn.classList.remove('hidden');
   }
 
-  strip.innerHTML = '';
+  // Create or reuse the track element
+  let track = strip.querySelector('.cal-strip-track');
+  if (!track) {
+    track = document.createElement('div');
+    track.className = 'cal-strip-track';
+    strip.innerHTML = '';
+    strip.appendChild(track);
+  } else {
+    track.innerHTML = '';
+  }
+  stripTrack = track;
+  stripDayCount = days.length;
 
-  days.forEach(d => {
+  let selectedIndex = 15; // Default to center (today)
+
+  days.forEach((d, i) => {
     const key      = dateKey(d);
     const isToday    = key === todayKey();
     const isSelected = key === selectedDate;
     const isFuture   = key > todayKey();
     const hasDone    = logs[key] && Object.keys(logs[key]).length > 0;
+
+    if (isSelected) selectedIndex = i;
 
     const el = document.createElement('div');
     el.className = 'cal-day'
@@ -635,27 +1627,30 @@ function buildCalendar() {
     el.setAttribute('aria-label', d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }));
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
+    el.dataset.dateKey = key;
 
     el.innerHTML = `
       <span class="cal-letter">${DAY_LABELS[d.getDay()]}</span>
       <span class="cal-num">${d.getDate()}</span>
     `;
 
-    el.addEventListener('click', () => selectDate(key));
+    // Tap to select (only if not dragging)
+    el.addEventListener('click', (e) => {
+      // Don't select if user was dragging (moved > 5px)
+      if (Math.abs(stripTouchState.startOffset - stripOffset) > 5) return;
+      selectDate(key);
+    });
     el.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDate(key); }
     });
 
-    strip.appendChild(el);
+    track.appendChild(el);
   });
   
-  // Center natively
-  setTimeout(() => {
-    const activeEl = strip.querySelector('.cal-day.selected');
-    if (activeEl) {
-      activeEl.scrollIntoView({ behavior: 'auto', inline: 'center', block: 'nearest' });
-    }
-  }, 100);
+  // Position the strip so the selected day is centered
+  if (!opts.skipRecenter) {
+    recenterStrip();
+  }
 }
 
 // ─── Full Calendar Modal ──────────────────────
@@ -1096,6 +2091,189 @@ function bindScheduleUI() {
   });
 }
 
+
+/**
+ * Expands a journal image into a full-screen overlay
+ */
+function expandJournalImage(src) {
+  // Remove any existing overlay first
+  const existing = document.getElementById('media-expand-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'media-expand-overlay';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'close-expand';
+  closeBtn.textContent = '\u00d7';
+  closeBtn.addEventListener('click', () => overlay.remove());
+
+  const img = document.createElement('img');
+  img.alt = 'Expanded Image';
+  img.src = src;   // Safe: set via JS property, not HTML attribute
+
+  overlay.appendChild(closeBtn);
+  overlay.appendChild(img);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+/**
+ * Smoothly fades out and stops a journal audio element.
+ */
+function fadeAndStopJournalAudio(playerEl, duration = 400) {
+  const audio = playerEl.querySelector('audio');
+  if (!audio || audio.paused) return;
+
+  const btn = playerEl.querySelector('.audio-play-btn');
+  const icon = btn ? btn.querySelector('.material-symbols-outlined') : null;
+  const bar = playerEl.querySelector('.audio-progress-bar');
+
+  // Instant UI feedback for responsiveness
+  playerEl.classList.remove('audio-playing');
+  if (icon) icon.textContent = 'play_arrow';
+  if (bar) bar.style.width = '0%';
+
+  const startVolume = audio.volume;
+  const startTime = performance.now();
+
+  function fade() {
+    const now = performance.now();
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    audio.volume = startVolume * (1 - progress);
+
+    if (progress < 1 && !audio.paused) {
+      requestAnimationFrame(fade);
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = startVolume; // Reset volume for next time it's played
+    }
+  }
+
+  requestAnimationFrame(fade);
+}
+
+/**
+ * Stops all playing audio elements and resets their UI with a fade-out.
+ */
+function stopAllJBookAudio(exceptId) {
+  document.querySelectorAll('.jbook-audio-player').forEach(player => {
+    const audio = player.querySelector('audio');
+    if (audio && audio.id !== exceptId && !audio.paused) {
+      fadeAndStopJournalAudio(player);
+    }
+  });
+}
+
+/**
+ * Toggles audio playback for a jbook audio player.
+ */
+function toggleJBookAudioPlayer(playerEl) {
+  const audio = playerEl.querySelector('audio');
+  if (!audio) return;
+
+  const btn = playerEl.querySelector('.audio-play-btn');
+  const icon = btn ? btn.querySelector('.material-symbols-outlined') : null;
+  const bar = playerEl.querySelector('.audio-progress-bar');
+
+  if (audio.paused) {
+    stopAllJBookAudio(audio.id);
+    audio.play().catch(err => console.warn('Audio play failed:', err));
+    playerEl.classList.add('audio-playing');
+    if (icon) icon.textContent = 'pause';
+
+    audio.ontimeupdate = () => {
+      if (audio.duration && bar) {
+        bar.style.width = `${(audio.currentTime / audio.duration) * 100}%`;
+      }
+    };
+    audio.onended = () => {
+      playerEl.classList.remove('audio-playing');
+      if (icon) icon.textContent = 'play_arrow';
+      if (bar) bar.style.width = '0%';
+    };
+  } else {
+    fadeAndStopJournalAudio(playerEl);
+  }
+}
+
+/**
+ * Renders media attachments (images/audio) as a DOM element.
+ * Returns null if there is no media to render.
+ */
+function renderMediaToBlock(item) {
+  const hasImages = item.images && item.images.length > 0;
+  const hasAudio  = item.audio  && item.audio.data;
+  if (!hasImages && !hasAudio) return null;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'jbook-media-section';
+
+  // ── Image Gallery ──
+  if (hasImages) {
+    const grid = document.createElement('div');
+    grid.className = 'jbook-image-grid';
+    // Adjust grid for narrow book pages
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:8px;';
+    item.images.forEach((imgSrc, idx) => {
+      const frame = document.createElement('div');
+      frame.className = 'jbook-photo-frame';
+      frame.title = `Photo ${idx + 1} — tap to expand`;
+
+      const img = document.createElement('img');
+      img.alt = `Attachment ${idx + 1}`;
+      img.src = imgSrc;  // Safe JS property assignment
+      img.decoding = 'async'; // Offload decoding to background thread for smoothness
+      // Do NOT use loading='lazy' — PageFlip renders pages off-screen
+      // and lazy loading prevents images from ever appearing
+
+      frame.appendChild(img);
+      // Event listener — no inline handler, no base64 in HTML
+      frame.addEventListener('click', (e) => { e.stopPropagation(); expandJournalImage(imgSrc); });
+      grid.appendChild(frame);
+    });
+    wrapper.appendChild(grid);
+  }
+
+  // ── Audio Player ──
+  if (hasAudio) {
+    const player = document.createElement('div');
+    player.className = 'jbook-audio-player';
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'audio-play-btn';
+    playBtn.setAttribute('aria-label', 'Play voice note');
+    playBtn.innerHTML = '<span class="material-symbols-outlined">play_arrow</span>';
+
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'audio-info';
+    infoDiv.innerHTML = `
+      <div class="audio-progress-container">
+        <div class="audio-progress-bar"></div>
+      </div>
+      <div class="audio-time">Voice Note</div>`;
+
+    const audioEl = document.createElement('audio');
+    audioEl.src = item.audio.data;  // Safe JS property — no HTML attribute
+    audioEl.preload = 'metadata';   // Load metadata so duration is available
+
+    player.appendChild(playBtn);
+    player.appendChild(infoDiv);
+    player.appendChild(audioEl);
+
+    // Wire the play button to the player-level toggle
+    playBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleJBookAudioPlayer(player); });
+
+    wrapper.appendChild(player);
+  }
+
+  return wrapper;
+}
+
+
 function addHabit() {
   const nameInput = document.getElementById('habit-name-input');
   const name = nameInput.value.trim().slice(0, 60);
@@ -1340,126 +2518,379 @@ function saveEditHabit() {
 
 // ─── Journal ──────────────────────────────────
 function renderJournal() {
+  // --- Performance Guard ---
+  // If the book is currently flipping, queue a re-render for after it finishes
+  if (isJournalFlipping) {
+    pendingJournalRender = true;
+    return;
+  }
+  pendingJournalRender = false;
+
   const label    = document.getElementById('journal-date-label');
   const textarea = document.getElementById('journal-textarea');
-  const history  = document.getElementById('journal-history');
-  history.innerHTML = '';
-
+  let bookWrapper = document.getElementById('journal-book-wrapper');
+  
   const d = parseDate(selectedDate);
   label.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
   textarea.value = ''; // Always empty for new entry
-  textarea.placeholder = `Add a new entry for ${d.toLocaleDateString('en-US', { month:'short', day:'numeric' })}...`;
+  textarea.placeholder = `Begin writing...`;
 
-  // Flat list of Dates that have entries, sorted newest first
-  const sortedDates = Object.entries(journal)
-    .filter(([_, items]) => Array.isArray(items) && items.some(i => i.text && i.text.trim()))
+  // Collect all journal dates that have content
+  const allSortedDates = Object.entries(journal)
+    .filter(([_, items]) => Array.isArray(items) && items.some(i => (i.text && i.text.trim()) || (i.images && i.images.length > 0) || i.audio))
     .map(([k]) => k)
-    .sort((a, b) => b.localeCompare(a))
-    .slice(0, 5);
+    .sort((a, b) => a.localeCompare(b));
 
-  if (sortedDates.length === 0) {
-    const msg = document.createElement('p');
-    msg.style.cssText = 'font-family:var(--font-display);font-size:15px;color:var(--slate);padding:16px 0;font-style:italic;text-align:center;';
-    msg.textContent = 'No past entries yet.';
-    history.appendChild(msg);
-    return;
+  // --- Windowed Rendering Logic (15-day window) ---
+  // This prevents DOM bloat and keeps the app lightweight.
+  const selectedIndex = allSortedDates.indexOf(selectedDate);
+  const windowRange   = 7; // Current date + 7 before + 7 after = 15 dates total
+  
+  let windowStart = 0;
+  let windowEnd   = allSortedDates.length - 1;
+
+  if (selectedIndex !== -1) {
+    windowStart = Math.max(0, selectedIndex - windowRange);
+    windowEnd   = Math.min(allSortedDates.length - 1, selectedIndex + windowRange);
+  } else if (allSortedDates.length > 0) {
+    // If selectedDate has no entry, show the last page
+    windowStart = Math.max(0, allSortedDates.length - (windowRange * 2));
+    windowEnd = allSortedDates.length - 1;
   }
 
-  const header = document.createElement('p');
-  header.className = 'section-heading';
-  header.style.marginBottom = '16px';
-  header.textContent = 'Your Journal Feed';
-  history.appendChild(header);
+  const windowedDates = allSortedDates.slice(windowStart, windowEnd + 1);
+  const relativeSelectedIndex = windowedDates.indexOf(selectedDate);
+    
+  const pagesArray = [];
+  
+  
+  // Cover Page
+  const coverPage = document.createElement('div');
+  coverPage.className = 'jbook-page jbook-page-cover';
+  coverPage.setAttribute('data-density', 'hard');
+  coverPage.innerHTML = `
+    <div class="jbook-page-content" style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; text-align:center; padding: 24px;">
+      <div style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:14px; color:#c9a84c; letter-spacing: 3px; margin-bottom:24px; opacity:0.7;">✦</div>
+      <h2 style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:22px; font-weight:500; color:#c9a84c; margin-bottom:6px; letter-spacing:1.5px; text-shadow: 0 1px 3px rgba(0,0,0,0.6);">Meditations</h2>
+      <p style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:15px; font-weight:300; color:#c9a84c; letter-spacing: 1px; opacity:0.85; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">&amp; Reflections</p>
+      <div style="width:50px; height:1px; background:linear-gradient(90deg, transparent, rgba(201,168,76,0.5), transparent); margin:20px auto;"></div>
+      <p style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:11px; font-weight:400; color:rgba(201,168,76,0.5); letter-spacing: 2.5px; font-style:italic;">— est. ${new Date().getFullYear()} —</p>
+    </div>
+  `;
+  pagesArray.push(coverPage);
 
-  sortedDates.forEach((key) => {
-    const d = parseDate(key);
-    const dayEntries = journal[key] || [];
+  if (windowedDates.length === 0) {
+    const blankBackside = document.createElement('div');
+    blankBackside.className = 'jbook-page jbook-empty-page';
+    blankBackside.innerHTML = `<div class="jbook-page-content" style="height:100%;"></div>`;
+    pagesArray.push(blankBackside);
 
-    const card = document.createElement('div');
-    card.className = 'journal-entry-card';
-    card.style.cursor = 'default';
-    card.style.padding = '0'; // We will pad the blocks instead
-
-
-
-    // Important: We sort the day's entries NEWEST first inside the card
-    const sortedDayItems = [...dayEntries]
-      .map((item, originalIndex) => ({ ...item, originalIndex }))
-      .filter(i => i.text && i.text.trim())
-      .sort((a, b) => b.ts - a.ts);
-
-    sortedDayItems.forEach((item, idx) => {
-      const timeStr = item.ts ? new Date(item.ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
-      const isLast = idx === sortedDayItems.length - 1;
-
-      const block = document.createElement('div');
-      block.className = 'journal-entry-block';
-      block.setAttribute('role', 'button');
-      block.setAttribute('tabindex', '0');
-      block.style.padding = '12px 16px';
-      if (!isLast) block.style.borderBottom = '1px solid rgba(0,0,0,0.05)';
-
-      block.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-          <span style="font-size: 11px; font-weight: 700; color: var(--sage); text-transform:uppercase;">${timeStr}</span>
-        </div>
-        <div class="journal-entry-body">${escapeHtml(item.text)}</div>
-      `;
-
-      let journalPressTimer;
-      let journalLongPressTriggered = false;
-
-      const startJournalPress = () => {
-        journalLongPressTriggered = false;
-        journalPressTimer = setTimeout(() => {
-          journalLongPressTriggered = true;
-          if (notifSettings.hapticsEnabled) {
-            try { Haptics.impact({ style: ImpactStyle.Heavy }); } catch(err) {}
-          }
-          deleteJournalEntry(key, item.originalIndex, 'journal');
-        }, 600);
-      };
-
-      const cancelJournalPress = () => {
-        clearTimeout(journalPressTimer);
-      };
-
-      block.addEventListener('mousedown', startJournalPress);
-      block.addEventListener('touchstart', startJournalPress, { passive: true });
-      block.addEventListener('mouseup', cancelJournalPress);
-      block.addEventListener('mouseleave', cancelJournalPress);
-      block.addEventListener('touchend', cancelJournalPress);
-      block.addEventListener('touchmove', cancelJournalPress, { passive: true });
-
-      block.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (journalLongPressTriggered) return;
-        openHistoryModal(key, item.text, null, item.originalIndex);
-      });
-
-      block.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); block.click(); }
-      });
-
-      card.appendChild(block);
-    });
-
-    // Handle initial card creation properly by re-prepending the date
+    const introPage = document.createElement('div');
+    introPage.className = 'jbook-page';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'jbook-page-content';
+    
     const dateHeader = document.createElement('div');
     dateHeader.className = 'journal-entry-date';
-    dateHeader.style.cssText = 'padding: 12px 16px 4px; color: var(--slate); font-size: 11px; opacity: 0.7;';
-    dateHeader.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }).toUpperCase();
-    card.prepend(dateHeader);
+    dateHeader.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
+    contentDiv.appendChild(dateHeader);
 
-    history.appendChild(card);
+    const block = document.createElement('div');
+    block.className = 'journal-entry-block system-entry';
+    block.style.padding = '10px 16px 10px 48px';
+    block.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+        <span style="font-family: var(--font-display); font-size: 11px; font-style: italic; color: #7a6852; opacity: 0.6;">— entry i</span>
+      </div>
+      <div class="journal-entry-body">${SYSTEM_INTRO_ENTRY.text}</div>
+    `;
+    const mediaEl = renderMediaToBlock(SYSTEM_INTRO_ENTRY);
+    if (mediaEl) block.appendChild(mediaEl);
+    contentDiv.appendChild(block);
+    
+    const endMark = document.createElement('div');
+    endMark.className = 'journal-end-mark';
+    endMark.innerHTML = '·&nbsp;&nbsp;·&nbsp;&nbsp;·';
+    contentDiv.appendChild(endMark);
+
+    introPage.appendChild(contentDiv);
+    
+    const pageNum = document.createElement('div');
+    pageNum.className = 'jbook-page-number';
+    pageNum.textContent = "1";
+    introPage.appendChild(pageNum);
+    
+    pagesArray.push(introPage);
+  } else {
+    windowedDates.forEach((key) => {
+      // Blank left side (backside of previous leaf)
+      const blankBackside = document.createElement('div');
+      blankBackside.className = 'jbook-page jbook-empty-page';
+      blankBackside.innerHTML = `<div class="jbook-page-content" style="height:100%;"></div>`;
+      pagesArray.push(blankBackside);
+
+      const pageDate = parseDate(key);
+      const dayEntries = journal[key] || [];
+
+      const pageDiv = document.createElement('div');
+      pageDiv.className = 'jbook-page';
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'jbook-page-content';
+
+      const dateHeader = document.createElement('div');
+      dateHeader.className = 'journal-entry-date';
+      dateHeader.textContent = pageDate.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
+      contentDiv.appendChild(dateHeader);
+
+      const sortedDayItems = [...dayEntries]
+        .map((item, originalIndex) => ({ ...item, originalIndex }))
+        .filter(i => (i.text && i.text.trim()) || (i.images && i.images.length > 0) || i.audio);
+
+      // Prepend system intro only on the first ever page of the book
+      if (allSortedDates.indexOf(key) === 0) {
+        sortedDayItems.unshift({ ...SYSTEM_INTRO_ENTRY, originalIndex: -1 });
+      }
+
+      sortedDayItems.sort((a, b) => a.ts - b.ts);
+
+      sortedDayItems.forEach((item, idx) => {
+        const timeStr = item.ts ? new Date(item.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase() : '';
+        const isLast = idx === sortedDayItems.length - 1;
+
+        const block = document.createElement('div');
+        block.className = 'journal-entry-block';
+        block.setAttribute('role', 'button');
+        block.setAttribute('tabindex', '0');
+        block.style.padding = '10px 16px 10px 48px';
+        if (!isLast) block.style.borderBottom = '1px solid rgba(139,119,92,0.06)';
+
+        block.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+            <span style="font-family: var(--font-display); font-size: 11px; font-style: italic; color: #7a6852; opacity: 0.6;">— ${timeStr}</span>
+          </div>
+          ${item.text && item.text.trim() ? `<div class="journal-entry-body">${escapeHtml(item.text)}</div>` : ''}
+        `;
+        const mediaEl = renderMediaToBlock(item);
+        if (mediaEl) block.appendChild(mediaEl);
+
+        let journalPressTimer;
+        let journalLongPressTriggered = false;
+
+        const startJournalPress = () => {
+          journalLongPressTriggered = false;
+          journalPressTimer = setTimeout(() => {
+            journalLongPressTriggered = true;
+            if (notifSettings.hapticsEnabled) {
+              try { Haptics.impact({ style: ImpactStyle.Heavy }); } catch(err) {}
+            }
+            deleteJournalEntry(key, item.originalIndex, 'journal');
+          }, 600);
+        };
+
+        const cancelJournalPress = () => {
+          clearTimeout(journalPressTimer);
+        };
+
+        block.addEventListener('mousedown', startJournalPress);
+        block.addEventListener('touchstart', startJournalPress, { passive: true });
+        block.addEventListener('mouseup', cancelJournalPress);
+        block.addEventListener('mouseleave', cancelJournalPress);
+        block.addEventListener('touchend', cancelJournalPress);
+        block.addEventListener('touchmove', cancelJournalPress, { passive: true });
+
+        block.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (journalLongPressTriggered || item.isSystem) return;
+          openHistoryModal(key, item.text, null, item.originalIndex);
+        });
+
+        block.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); block.click(); }
+        });
+
+        contentDiv.appendChild(block);
+      });
+
+      const endMark = document.createElement('div');
+      endMark.className = 'journal-end-mark';
+      endMark.innerHTML = '·&nbsp;&nbsp;·&nbsp;&nbsp;·';
+      contentDiv.appendChild(endMark);
+
+      contentDiv.addEventListener('touchmove', (e) => {
+        const isVertical = Math.abs(e.touches[0].clientY - (this._lastTouchY || 0)) > Math.abs(e.touches[0].clientX - (this._lastTouchX || 0));
+        if (isVertical) e.stopPropagation();
+      }, { passive: true });
+      contentDiv.addEventListener('touchstart', (e) => {
+        this._lastTouchX = e.touches[0].clientX;
+        this._lastTouchY = e.touches[0].clientY;
+      }, { passive: true });
+      contentDiv.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+
+      pageDiv.appendChild(contentDiv);
+
+      const pageNum = document.createElement('div');
+      pageNum.className = 'jbook-page-number';
+      // Use global index for page numbers to keep history consistent
+      pageNum.textContent = allSortedDates.indexOf(key) + 1;
+      pageDiv.appendChild(pageNum);
+
+      pagesArray.push(pageDiv);
+    });
+  }
+
+  // --- Append 3 Quote Pages ---
+  const quotes = [
+    { text: "We are what we repeatedly do. Excellence, then, is not an act, but a habit.", author: "Aristotle" },
+    { text: "The unexamined life is not worth living.", author: "Socrates" },
+    { text: "Every action you take is a vote for the type of person you wish to become.", author: "James Clear" }
+  ];
+
+  quotes.forEach(quote => {
+    const blankBackside = document.createElement('div');
+    blankBackside.className = 'jbook-page jbook-empty-page';
+    blankBackside.innerHTML = `<div class="jbook-page-content" style="height:100%;"></div>`;
+    pagesArray.push(blankBackside);
+
+    const quotePage = document.createElement('div');
+    quotePage.className = 'jbook-page quotes-page';
+    quotePage.innerHTML = `
+      <div class="jbook-page-content" style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; text-align:center; padding: 0 40px; box-sizing: border-box; background-image: none !important;">
+        <div style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size: 18px; font-style: italic; color: #5a4a38; line-height: 1.6; margin-bottom: 16px;">
+          "${quote.text}"
+        </div>
+        <div style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size: 14px; font-weight: 500; color: #8a7862; letter-spacing: 1px; text-transform: uppercase;">
+          — ${quote.author}
+        </div>
+      </div>
+    `;
+    pagesArray.push(quotePage);
   });
+
+  if (pagesArray.length % 2 !== 0) {
+    const fillerPage = document.createElement('div');
+    fillerPage.className = 'jbook-page jbook-empty-page';
+    fillerPage.innerHTML = `<div class="jbook-page-content" style="display:flex; justify-content:center; align-items:center; height:100%;"></div>`;
+    pagesArray.push(fillerPage);
+  }
+
+  // Back Cover
+  const backCover = document.createElement('div');
+  backCover.className = 'jbook-page jbook-page-cover';
+  backCover.setAttribute('data-density', 'hard');
+  backCover.innerHTML = `
+    <div class="jbook-page-content" style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; text-align:center;">
+      <div style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:12px; color:rgba(201,168,76,0.4); letter-spacing: 3px;">✦</div>
+      <p style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:9px; font-weight:400; color:rgba(201,168,76,0.3); letter-spacing: 3px; text-transform:uppercase; margin-top:8px;">A.V.</p>
+    </div>
+  `;
+  pagesArray.push(backCover);
+
+  if (bookWrapper) {
+    // Helper to flip to the correct date
+    const flipToTarget = () => {
+      if (!journalPageFlip) return;
+      try {
+        const finalFlipTarget = relativeSelectedIndex >= 0 ? (relativeSelectedIndex * 2) + 2 : 2;
+        journalPageFlip.flip(finalFlipTarget);
+      } catch(e) {}
+    };
+
+    if (journalPageFlip && document.getElementById('screen-journal').classList.contains('active')) {
+      try {
+        journalPageFlip.updateFromHtml(pagesArray);
+        // Sync with next frame for buttery transition
+        requestAnimationFrame(flipToTarget);
+        return; 
+      } catch(err) {
+        console.error("journalPageFlip update failed, falling back to full initialization", err);
+        try { journalPageFlip.destroy(); } catch(e) {}
+        journalPageFlip = null;
+      }
+    }
+
+    requestAnimationFrame(() => {
+      // Small 50ms delay to allow DOM to settle after screen transition
+      setTimeout(() => {
+        if (!document.getElementById('screen-journal').classList.contains('active')) return;
+
+        let bookWidth = window.innerWidth - 48;
+        if (bookWidth > 340) bookWidth = 340;
+        const bookHeight = 420;
+
+        try {
+          if (!journalPageFlip) {
+            const parent = bookWrapper.parentNode;
+            const newWrapper = document.createElement('div');
+            newWrapper.className = 'journal-book-wrapper';
+            newWrapper.id = 'journal-book-wrapper';
+            parent.replaceChild(newWrapper, bookWrapper);
+            bookWrapper = newWrapper;
+            
+            bookWrapper.style.minHeight = bookHeight + 'px';
+            bookWrapper.style.minWidth = (bookWidth * 2) + 'px';
+            bookWrapper.style.transform = `translateX(-${bookWidth / 2}px)`;
+
+            journalPageFlip = new PageFlip(bookWrapper, {
+              width: bookWidth, 
+              height: bookHeight,
+              size: 'fixed',
+              minWidth: 200,
+              maxWidth: 600,
+              minHeight: 300,
+              maxHeight: 800,
+              usePortrait: false, 
+              maxShadowOpacity: 0.15,
+              showCover: true,
+              mobileScrollSupport: true,
+              disableFlipByClick: true,
+              flippingTime: 600,
+              drawShadow: true
+            });
+
+            // Bind high-FPS event guards + animation-state CSS class
+            journalPageFlip.on('flip', (e) => {
+              isJournalFlipping = true;
+              bookWrapper.classList.add('jbook-flipping');
+              // Stop all audio on page flip
+              stopAllJBookAudio(null);
+            });
+            journalPageFlip.on('finishFlip', (e) => {
+              isJournalFlipping = false;
+              // Defer class removal to next frame to avoid mid-composite reflow
+              requestAnimationFrame(() => {
+                bookWrapper.classList.remove('jbook-flipping');
+              });
+              // If a render was queued during the flip, execute it now
+              if (pendingJournalRender) {
+                pendingJournalRender = false;
+                renderJournal();
+              }
+            });
+
+            journalPageFlip.loadFromHTML(pagesArray);
+            
+            requestAnimationFrame(() => {
+              bookWrapper.classList.add('ready');
+            });
+          }
+          
+          // Final sync flip
+          setTimeout(flipToTarget, 500); 
+        } catch(err) {
+          console.error("PageFlip init error:", err);
+        }
+      }, 50);
+    });
+  }
 }
 
 async function deleteJournalEntry(key, index, type = 'journal', habitId = null) {
+  if (index === -1) return; // Protect system entries
   const confirmed = await showConfirm(
-    "Delete Entry?",
-    `Are you sure you want to remove this memory? This action cannot be undone.`,
-    "Delete",
+    "Erase this passage?",
+    `Once erased, these words cannot be recovered.`,
+    "Erase",
     true
   );
 
@@ -1480,8 +2911,14 @@ async function deleteJournalEntry(key, index, type = 'journal', habitId = null) 
       }
     }
     
-    // Refresh whichever view is currently active
-    if (currentScreen === 'journal') renderJournal();
+    // Refresh whichever view is currently active — force-reset flip state so render goes through
+    if (currentScreen === 'journal') {
+      isJournalFlipping = false;
+      pendingJournalRender = false;
+      const bw = document.getElementById('journal-book-wrapper');
+      if (bw) bw.classList.remove('jbook-flipping');
+      renderJournal();
+    }
     if (currentScreen === 'today') renderHabits(); // if detail is open, it might need refreshing
     
     // Specifically refresh archive if open
@@ -1490,7 +2927,7 @@ async function deleteJournalEntry(key, index, type = 'journal', habitId = null) 
       renderJournalArchive();
     }
 
-    showToast("Entry removed");
+    showToast("Passage erased.");
     if (notifSettings.hapticsEnabled) {
       try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(err) {}
     }
@@ -1498,13 +2935,88 @@ async function deleteJournalEntry(key, index, type = 'journal', habitId = null) 
 }
 
 function saveJournal() {
-  const text = document.getElementById('journal-textarea').value.trim();
-  if (text) {
+  const textarea = document.getElementById('journal-textarea');
+  const text = textarea.value.trim();
+  const media = currentAttachments.journal;
+
+  if (text || (media && (media.images.length > 0 || media.audio))) {
     if (!Array.isArray(journal[selectedDate])) journal[selectedDate] = [];
-    journal[selectedDate].push({ text, ts: Date.now() });
+    
+    journal[selectedDate].push({ 
+      text, 
+      ts: Date.now(),
+      images: media.images.length > 0 ? [...media.images] : undefined,
+      audio: media.audio ? { ...media.audio } : undefined
+    });
+
     save();
-    showToast('Entry added.');
+    showToast('Commitment made.');
+    resetMediaAttachments('journal');
+    textarea.value = '';
+    // Force-reset flip state so the render always goes through with fresh content
+    isJournalFlipping = false;
+    pendingJournalRender = false;
+    const bw = document.getElementById('journal-book-wrapper');
+    if (bw) bw.classList.remove('jbook-flipping');
     renderJournal();
+  }
+}
+
+// Add global keyboard tracking via Visual Viewport API
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.visualViewport) {
+    let originalHeight = window.innerHeight;
+    
+    window.visualViewport.addEventListener('resize', () => {
+      const currentHeight = window.visualViewport.height;
+      // Detect keyboard if viewport height drops significantly (e.g. > 15%)
+      const isKeyboardVisible = currentHeight < originalHeight * 0.85;
+      
+      if (isKeyboardVisible) {
+        document.body.classList.add('keyboard-visible');
+      } else {
+        document.body.classList.remove('keyboard-visible');
+        // Reset scroll positions
+        const jMain = document.querySelector('.journal-main');
+        if (jMain) jMain.scrollTop = 0;
+        window.scrollTo(0, 0);
+      }
+    });
+
+    // Handle orientation changes or other height updates
+    window.addEventListener('resize', () => {
+      // Small delay to let the innerHeight stabilize after rotation
+      setTimeout(() => {
+        if (window.visualViewport.height > window.innerHeight * 0.9) {
+          originalHeight = window.innerHeight;
+        }
+      }, 100);
+    });
+  }
+});
+
+// ─── Expanded Journal Modal ──────────────────────
+function openExpandedJournal() {
+  const textarea = document.getElementById('journal-textarea');
+  const expandedTextarea = document.getElementById('journal-expanded-textarea');
+  if (textarea && expandedTextarea) {
+    expandedTextarea.value = textarea.value;
+    document.getElementById('journal-expanded-modal').classList.remove('hidden');
+    setTimeout(() => expandedTextarea.focus(), 100);
+  }
+}
+
+function closeExpandedJournal() {
+  const modal = document.getElementById('journal-expanded-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function saveExpandedJournal() {
+  const textarea = document.getElementById('journal-textarea');
+  const expandedTextarea = document.getElementById('journal-expanded-textarea');
+  if (textarea && expandedTextarea) {
+    textarea.value = expandedTextarea.value;
+    closeExpandedJournal();
   }
 }
 
@@ -1806,6 +3318,10 @@ function confirmClear() {
 
 // ─── Navigation (with transitions) ───────────
 function switchScreen(name, linkEl) {
+  // Clear any keyboard states immediately when switching screens
+  document.body.classList.remove('keyboard-visible');
+  window.scrollTo(0, 0);
+
   if (currentScreen === name && !activeHabitId) return;
 
   currentScreen = name;
@@ -1838,11 +3354,11 @@ function switchScreen(name, linkEl) {
   // Restore bottom nav
   document.getElementById('bottom-nav').classList.remove('nav-hidden');
 
-  // Refresh screen content (deferred to ensure smooth CSS transition)
+  // Refresh screen content (synchronized with 0.2s CSS transition)
   setTimeout(() => {
     if (name === 'journal') renderJournal();
     if (name === 'profile') renderProfile();
-  }, 30);
+  }, 180); // Slightly before 200ms animation ends so it's ready when screen shows up
 }
 
 // ─── Habit Detail Screen ──────────────────────
@@ -1951,13 +3467,12 @@ function renderHabitEntries(habitId) {
 
     const dateHeader = document.createElement('div');
     dateHeader.className = 'journal-entry-date';
-    dateHeader.style.cssText = 'padding: 12px 16px 4px; color: var(--slate); font-size: 11px; opacity: 0.7;';
     dateHeader.textContent = d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }).toUpperCase();
     card.appendChild(dateHeader);
 
     const sortedDayItems = [...dayEntries]
       .map((item, originalIndex) => ({ ...item, originalIndex }))
-      .filter(i => i.text && i.text.trim())
+      .filter(i => (i.text && i.text.trim()) || (i.images && i.images.length > 0) || i.audio)
       .sort((a, b) => b.ts - a.ts);
 
     sortedDayItems.forEach((item, idx) => {
@@ -1973,8 +3488,10 @@ function renderHabitEntries(habitId) {
 
       block.innerHTML = `
         <div style="font-size: 10px; font-weight: 700; color: var(--sage); margin-bottom: 4px;">${timeStr}</div>
-        <div class="journal-entry-body">${escapeHtml(item.text)}</div>
+        ${item.text && item.text.trim() ? `<div class="journal-entry-body">${escapeHtml(item.text)}</div>` : ''}
       `;
+      const mediaEl = renderMediaToBlock(item);
+      if (mediaEl) block.appendChild(mediaEl);
 
       block.addEventListener('click', () => {
         openHistoryModal(key, item.text, habitId, item.originalIndex);
@@ -1994,18 +3511,32 @@ function renderHabitEntries(habitId) {
 function saveHabitJournalEntry() {
   if (!activeHabitId) return;
   const text = document.getElementById('detail-journal-textarea').value.trim();
-  if (!text) {
-    showToast('Write something first.');
+  
+  // Collect media from currentAttachments
+  const attachments = currentAttachments['detail'];
+  const images = attachments ? (attachments.images || []) : [];
+  const audio = attachments ? attachments.audio : null;
+
+  if (!text && images.length === 0 && !audio) {
+    showToast('Write something or add media first.');
     return;
   }
+
   const key = todayKey();
   if (!habitJournal[activeHabitId]) habitJournal[activeHabitId] = {};
   if (!Array.isArray(habitJournal[activeHabitId][key])) habitJournal[activeHabitId][key] = [];
   
-  habitJournal[activeHabitId][key].push({ text, ts: Date.now() });
+  const entry = { text, ts: Date.now() };
+  if (images.length > 0) entry.images = images;
+  if (audio) entry.audio = { data: audio.data, type: audio.type || 'audio/webm' };
+
+  habitJournal[activeHabitId][key].push(entry);
   save();
   renderHabitEntries(activeHabitId);
+  
+  // Reset UI
   document.getElementById('detail-journal-textarea').value = '';
+  resetMediaAttachments('detail');
   showToast('Entry added.');
 }
 
@@ -2356,7 +3887,7 @@ async function cancelAllNotifications() {
  * Always cancels all pending notifications first, then rebuilds from current
  * notifSettings. Call this whenever any notification preference changes.
  */
-async function scheduleNotifications() {
+async function scheduleNotifications(silent = false) {
   // Always start clean
   await cancelAllNotifications();
 
@@ -2470,10 +4001,8 @@ async function scheduleNotifications() {
   try {
     await LocalNotifications.schedule({ notifications: toSchedule });
     console.log(`[Telos] ✅ Scheduled ${toSchedule.length} notification(s).`);
-    showToast(`✓ ${toSchedule.length} reminder${toSchedule.length > 1 ? 's' : ''} set.`);
   } catch (e) {
     console.error('[Telos] ❌ Notification scheduling failed:', e);
-    showToast('⚠ Could not schedule notifications.');
   }
 }
 
@@ -2568,14 +4097,29 @@ function renderJournalArchive() {
   feed.innerHTML = '';
 
   let allEntries = [];
-
+  
   if (archiveTab === 'general') {
+    const allJournalDates = Object.keys(journal).sort((a,b) => a.localeCompare(b));
+    const firstDate = allJournalDates[0] || todayKey();
+    
+    // Inject standard intro
+    allEntries.push({ 
+      dateKey: firstDate, 
+      type: 'general', 
+      text: SYSTEM_INTRO_ENTRY.text, 
+      ts: 1, // Absolute beginning
+      images: SYSTEM_INTRO_ENTRY.images, 
+      audio: SYSTEM_INTRO_ENTRY.audio, 
+      originalIndex: -1,
+      isSystem: true
+    });
+
     Object.keys(journal).forEach(dk => {
       const items = journal[dk];
       if (Array.isArray(items)) {
         items.forEach((item, index) => {
-          if (item.text && item.text.trim()) {
-            allEntries.push({ dateKey: dk, type: 'general', text: item.text, ts: item.ts, originalIndex: index });
+          if ((item.text && item.text.trim()) || (item.images && item.images.length > 0) || item.audio) {
+            allEntries.push({ dateKey: dk, type: 'general', text: item.text, ts: item.ts, images: item.images, audio: item.audio, originalIndex: index });
           }
         });
       }
@@ -2591,8 +4135,8 @@ function renderJournalArchive() {
         const items = datesObj[dk];
         if (Array.isArray(items)) {
           items.forEach((item, index) => {
-            if (item.text && item.text.trim()) {
-              allEntries.push({ dateKey: dk, type: 'habit', habitId, habitName, habitIcon, text: item.text, ts: item.ts, originalIndex: index });
+            if ((item.text && item.text.trim()) || (item.images && item.images.length > 0) || item.audio) {
+              allEntries.push({ dateKey: dk, type: 'habit', habitId, habitName, habitIcon, text: item.text, ts: item.ts, images: item.images, audio: item.audio, originalIndex: index });
             }
           });
         }
@@ -2601,7 +4145,7 @@ function renderJournalArchive() {
   }
 
   if (archiveSearch) {
-    allEntries = allEntries.filter(e => e.text.toLowerCase().includes(archiveSearch));
+    allEntries = allEntries.filter(e => (e.text || '').toLowerCase().includes(archiveSearch));
   }
 
   if (allEntries.length === 0) {
@@ -2642,14 +4186,10 @@ function renderJournalArchive() {
       const d = parseDate(dateKey);
       const card = document.createElement('div');
       card.className = 'journal-entry-card';
-      card.style.padding = '0';
-      card.style.marginBottom = '16px';
-      card.style.cursor = 'default';
 
       const dateHeader = document.createElement('div');
       dateHeader.className = 'journal-entry-date';
-      dateHeader.style.cssText = 'padding: 12px 16px 4px; color: var(--slate); font-size: 11px; opacity: 0.7;';
-      dateHeader.textContent = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase();
+      dateHeader.textContent = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase();
       card.appendChild(dateHeader);
 
       const items = dailyGrouped[dateKey];
@@ -2661,25 +4201,27 @@ function renderJournalArchive() {
         block.className = 'journal-entry-block';
         block.setAttribute('role', 'button');
         block.setAttribute('tabindex', '0');
-        block.style.padding = '12px 16px';
-        if (!isLast) block.style.borderBottom = '1px solid rgba(0,0,0,0.05)';
+        block.style.padding = '10px 16px 14px';
+        if (!isLast) block.style.borderBottom = '1px solid rgba(0,0,0,0.03)';
 
         let headerMeta = '';
         if (item.type === 'habit') {
           headerMeta = `
-            <div style="font-size: 12px; font-weight: 600; color: var(--charcoal); margin-bottom: 2px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--charcoal); margin-bottom: 2px; opacity: 0.8;">
               <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle; margin-right:4px;">${item.habitIcon}</span><span style="vertical-align:middle;">${escapeHtml(item.habitName)}</span>
             </div>
           `;
         }
 
         block.innerHTML = `
-          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-            <span style="font-size: 11px; font-weight: 700; color: var(--sage); text-transform:uppercase;">${timeStr}</span>
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+            <span style="font-size: 10px; font-weight: 700; color: var(--slate); opacity: 0.6; text-transform:uppercase;">${timeStr}</span>
           </div>
           ${headerMeta}
-          <div class="journal-entry-body">${escapeHtml(item.text)}</div>
+          ${item.text && item.text.trim() ? `<div class="journal-entry-body">${escapeHtml(item.text)}</div>` : ''}
         `;
+        const mediaEl = renderMediaToBlock(item);
+        if (mediaEl) block.appendChild(mediaEl);
 
         let archPressTimer;
         let archLongPressTriggered = false;
@@ -2723,6 +4265,11 @@ function renderJournalArchive() {
       feed.appendChild(card);
     });
   });
+
+  // Final scroll isolation to prevent background flips/scrolling
+  feed.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  feed.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+  feed.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
 }
 // ─── Tutorial Logic ──────────────────────────────────────────────────────────
 let tutorialCurrentStep = 0;

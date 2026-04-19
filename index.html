@@ -17,7 +17,7 @@
   <!-- Google Fonts -->
   <link href="https://fonts.googleapis.com" rel="preconnect"/>
   <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
-  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet"/>
   <!-- Material Symbols -->
   <!-- Prevent FOUT on icon ligatures -->
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" rel="stylesheet"/>
@@ -108,23 +108,60 @@
 <div id="screen-journal" class="screen">
   <div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-end;">
     <div>
-      <h2 class="page-title">Journal</h2>
-      <p class="page-subtitle">Reflect on your day.</p>
+      <h2 class="page-title">The Journal</h2>
+      <p class="page-subtitle">A record of days.</p>
     </div>
     <button class="btn-browse-journal" id="btn-browse-journal" style="margin-top:0;">
       <span class="material-symbols-outlined">auto_stories</span>
-      Browse
+      Read Back
     </button>
   </div>
   <main class="journal-main">
-    <div class="journal-date-label" id="journal-date-label"></div>
-    <textarea id="journal-textarea" class="journal-textarea" placeholder="How did today feel? What are you grateful for?"></textarea>
-    <button class="btn-save" id="btn-save-journal">
-      <span class="material-symbols-outlined">check</span>
-      Save entry
-    </button>
-    <div class="journal-history" id="journal-history">
-      <!-- Past entries -->
+    <!-- Write Area -->
+    <div class="journal-write-area">
+      <div class="journal-date-label" id="journal-date-label"></div>
+      <div class="journal-input-row">
+        <div style="position: relative; width: 100%;">
+          <textarea id="journal-textarea" class="journal-textarea" placeholder="Begin writing..."></textarea>
+          <button id="btn-expand-journal" style="position: absolute; right: 12px; top: 12px; background: transparent; border: none; color: #7a6852; cursor: pointer; opacity: 0.6; transition: opacity 0.2s;" aria-label="Expand">
+            <span class="material-symbols-outlined" style="font-size: 20px;">open_in_full</span>
+          </button>
+        </div>
+        <div class="journal-controls">
+          <div class="journal-media-btns" style="display: flex; align-items: center; gap: 8px;">
+            <button class="btn-journal-control" id="journal-mic-btn" title="Record Voice">
+              <span class="material-symbols-outlined">mic</span>
+            </button>
+            <button class="btn-journal-control" id="journal-photo-btn" title="Attach Photo">
+              <span class="material-symbols-outlined">add_a_photo</span>
+            </button>
+            <input type="file" id="journal-photo-input" hidden accept="image/*" multiple />
+            
+            <!-- Recording Indicators -->
+            <div id="journal-rec-indicator" class="rec-indicator hidden"></div>
+            <div id="journal-rec-timer" class="rec-timer hidden">0:00</div>
+          </div>
+          <button class="btn-save-journal" id="btn-save-journal" aria-label="Save entry">
+            <span class="material-symbols-outlined">edit_note</span>
+            <span>Commit to Ink</span>
+          </button>
+        </div>
+      </div>
+      <div id="journal-attachments-preview" class="attachments-preview hidden"></div>
+    </div>
+
+    <!-- Flip Book -->
+    <div class="journal-book-section" id="journal-book-section">
+      <div class="journal-book-wrapper" id="journal-book-wrapper">
+        <!-- JS mounts StPageFlip here -->
+      </div>
+    </div>
+    
+    <!-- Journal Navigation Slider -->
+    <div class="journal-nav-slider-container" id="journal-nav-slider-container">
+      <div class="journal-nav-track" id="journal-nav-track">
+        <div class="journal-nav-thumb" id="journal-nav-thumb" role="slider" aria-valuenow="0" aria-valuemin="-1" aria-valuemax="1" tabindex="0"></div>
+      </div>
     </div>
   </main>
 </div>
@@ -629,7 +666,21 @@
         placeholder="How did this feel today?"
         rows="4"
       ></textarea>
+      <div id="detail-attachments-preview" class="attachments-preview hidden"></div>
       <div class="detail-journal-footer">
+        <div class="detail-controls">
+          <button class="btn-journal-control" id="detail-mic-btn" title="Record Voice">
+            <span class="material-symbols-outlined">mic</span>
+          </button>
+          <button class="btn-journal-control" id="detail-photo-btn" title="Attach Photo">
+            <span class="material-symbols-outlined">add_a_photo</span>
+          </button>
+          <input type="file" id="detail-photo-input" hidden accept="image/*" multiple />
+          
+          <!-- Recording Indicators -->
+          <div id="detail-rec-indicator" class="rec-indicator hidden"></div>
+          <div id="detail-rec-timer" class="rec-timer hidden">0:00</div>
+        </div>
         <button class="btn-save-entry" id="btn-save-entry">
           Save Entry
         </button>
@@ -982,7 +1033,7 @@
         <button class="archive-tab" data-tab="habits">Habit Notes</button>
       </div>
     </div>
-    <div class="modal-body modal-body-scroll" id="journal-archive-feed" style="background:var(--bg); padding-top: 16px;">
+    <div class="modal-body modal-body-scroll" id="journal-archive-feed" style="background: var(--bg);">
       <!-- JS renders the grouped archive here -->
     </div>
   </div>
@@ -1041,6 +1092,64 @@
     </div>
 
     <button class="conflict-cancel-btn" id="btn-conflict-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     JOURNAL EXPANDED WRITING MODAL
+═══════════════════════════════════════════ -->
+<div id="journal-expanded-modal" class="modal-overlay hidden">
+  <div class="modal journal-expanded-body" id="journal-expanded-body">
+    <!-- Top inner binding shadow effect -->
+    <div style="position: absolute; top:0; left:0; right:0; height: 16px; background: linear-gradient(to bottom, rgba(0,0,0,0.06), transparent); pointer-events: none; z-index: 10;"></div>
+    
+    <div class="modal-header" style="border-bottom: none; padding: 24px 24px 12px;">
+      <h3 class="modal-title" style="font-family: 'Cormorant Garamond', 'Newsreader', serif; font-size: 24px; font-weight: 500; font-style: italic; color: #5a4a38;">The Journal</h3>
+    </div>
+    
+    <div class="modal-body" style="flex: 1; display: flex; flex-direction: column; padding: 0 24px; overflow: hidden;">
+      <textarea id="journal-expanded-textarea" class="journal-expanded-textarea" placeholder="Begin writing..."></textarea>
+      
+      <!-- Modal Attachments Preview -->
+      <div id="journal-expanded-attachments-preview" class="attachments-preview hidden" style="margin-bottom: 24px;"></div>
+    </div>
+    
+    <div class="modal-actions expanded-journal-actions" style="justify-content: center;">
+      <button class="btn-primary" id="btn-save-expanded-journal" style="background: #1e3a2c; color: #c9a84c; padding: 10px 32px; font-weight: 600; border-radius: var(--radius-full);">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Microphone Permission Modal ─────────────── -->
+<div id="mic-permission-overlay" class="mic-perm-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="mic-perm-title">
+  <div class="mic-perm-sheet">
+    <div class="mic-perm-icon-wrap">
+      <span class="material-symbols-outlined mic-perm-icon">mic</span>
+    </div>
+    <h2 id="mic-perm-title" class="mic-perm-title">Microphone Access</h2>
+    <p id="mic-perm-body" class="mic-perm-body">
+      To record voice notes for your journal, Telos needs access to your microphone. Your recordings are stored only on your device.
+    </p>
+
+    <!-- Denied / permanently denied state -->
+    <div id="mic-perm-denied-hint" class="mic-perm-hint hidden">
+      <span class="material-symbols-outlined" style="font-size:18px;vertical-align:-4px;margin-right:6px;color:#e57373;">info</span>
+      Microphone access was denied. To enable it, open your device <strong>Settings → Apps → Telos → Permissions</strong> and allow the microphone.
+    </div>
+
+    <div class="mic-perm-actions">
+      <button id="mic-perm-cancel" class="mic-perm-btn mic-perm-btn-secondary">Not Now</button>
+      <button id="mic-perm-allow" class="mic-perm-btn mic-perm-btn-primary">
+        <span class="material-symbols-outlined" style="font-size:18px;vertical-align:-4px;margin-right:4px;">mic</span>
+        Allow Microphone
+      </button>
+    </div>
+
+    <!-- Settings button shown only when permanently denied -->
+    <button id="mic-perm-settings" class="mic-perm-settings-btn hidden">
+      <span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px;margin-right:4px;">settings</span>
+      Open Settings
+    </button>
   </div>
 </div>
 
