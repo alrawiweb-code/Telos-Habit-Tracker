@@ -1854,12 +1854,22 @@ function save() {
     // Sync to Android widget via high-priority synchronous bridge
     const todayStr = todayKey();
     const dayLogs = logs[todayStr] || {};
-    const scheduledHabits = habits.filter(h => shouldShowHabit(h, todayStr)).map(h => ({
-      id: h.id,
-      name: h.name,
-      icon: h.icon,
-      completed: !!dayLogs[h.id]
-    }));
+    const scheduledHabits = habits.filter(h => shouldShowHabit(h, todayStr)).map(h => {
+      let displayName = h.name;
+      if (h.schedule && h.schedule.type === 'onetime' && todayStr > h.schedule.date && !dayLogs[h.id]) {
+        const scheduledD = parseDate(h.schedule.date);
+        const todayD = parseDate(todayStr);
+        const diffTime = Math.abs(todayD - scheduledD);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        displayName += ` (${diffDays} day${diffDays > 1 ? 's' : ''} overdue)`;
+      }
+      return {
+        id: h.id,
+        name: displayName,
+        icon: h.icon,
+        completed: !!dayLogs[h.id]
+      };
+    });
 
     const dataStr = JSON.stringify(scheduledHabits);
 
@@ -2638,6 +2648,15 @@ function updateSummary() {
 }
 
 // ─── Habit Rendering ──────────────────────────
+function wasCompletedBefore(habitId, targetDateStr) {
+  for (const date in logs) {
+    if (date < targetDateStr && logs[date][habitId]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldShowHabit(habit, dateStr) {
   if (!habit.schedule) return true;
   if (habit.createdAt && dateStr < habit.createdAt) return false;
@@ -2649,7 +2668,13 @@ function shouldShowHabit(habit, dateStr) {
   if (type === 'daily') return true;
   if (type === 'weekdays') return dayOfWeek >= 1 && dayOfWeek <= 5;
   if (type === 'weekends') return dayOfWeek === 0 || dayOfWeek === 6;
-  if (type === 'onetime') return habit.schedule.date === dateStr;
+  if (type === 'onetime') {
+    if (dateStr === habit.schedule.date) return true;
+    if (dateStr > habit.schedule.date) {
+      return !wasCompletedBefore(habit.id, dateStr);
+    }
+    return false;
+  }
 
   if (type === 'custom') {
     // Check days of week if any selected
@@ -2699,11 +2724,21 @@ function renderHabits() {
     card.style.animationDelay = `${idx * 40}ms`;
     card.setAttribute('data-id', habit.id);
 
+    let overdueBadge = '';
+    if (habit.schedule && habit.schedule.type === 'onetime' && selectedDate > habit.schedule.date && !done) {
+      const scheduledD = parseDate(habit.schedule.date);
+      const selectedD = parseDate(selectedDate);
+      const diffTime = Math.abs(selectedD - scheduledD);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      overdueBadge = `<span class="overdue-badge">${diffDays} day${diffDays > 1 ? 's' : ''} overdue</span>`;
+    }
+
     card.innerHTML = `
       <div class="habit-card-info" role="button" tabindex="0" aria-label="View details for ${escapeHtml(habit.name)}">
         <div class="habit-card-icon-row">
           <span class="material-symbols-outlined habit-card-icon" style="font-variation-settings:'FILL' ${done ? 1 : 0};">${habit.icon}</span>
           <span class="habit-name${done ? ' habit-name--done' : ''}">${escapeHtml(habit.name)}</span>
+          ${overdueBadge}
         </div>
         ${habit.desc ? `<p class="habit-desc">${escapeHtml(habit.desc)}</p>` : ''}
       </div>

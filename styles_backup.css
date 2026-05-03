@@ -1,4 +1,4 @@
-/* Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+﻿/* Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
    ROOT TOKENS & RESET
 Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */
 *,
@@ -689,22 +689,6 @@ main {
   to {
     transform: scaleX(0);
   }
-}
-
-.overdue-badge {
-  display: inline-flex;
-  align-items: center;
-  background-color: rgba(220, 53, 69, 0.1); /* Subtle red/orange */
-  color: #dc3545;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 12px;
-  margin-left: 6px;
-  line-height: 1;
-  vertical-align: middle;
-  flex-shrink: 0;
 }
 
 .habit-desc {
@@ -1712,26 +1696,6 @@ main {
   overflow: hidden;
 }
 
-
-/* Light covers (e.g. Ivory) - strip dark vignette overlays so the pale background is clean */
-html[data-book-light="true"] .jbook-page-cover {
-  background-image:
-    var(--book-bg, linear-gradient(135deg, #f5f0e8 0%, #ece4d4 100%));
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  box-shadow:
-    -2px 2px 8px rgba(0, 0, 0, 0.10),
-    inset -2px 0 6px rgba(0, 0, 0, 0.05),
-    inset 1px 0 3px rgba(255, 255, 255, 0.5);
-}
-
-/* Light cover: softer spine edge */
-html[data-book-light="true"] .jbook-page-cover > .jbook-spine-edge {
-  background: linear-gradient(to right,
-    rgba(0, 0, 0, 0.10) 0%,
-    rgba(0, 0, 0, 0.03) 40%,
-    rgba(255, 255, 255, 0.3) 80%,
-    rgba(0, 0, 0, 0.02) 100%);
-}
 /* Cover: suppress ruled lines and margin */
 .jbook-page-cover .jbook-page-content {
   background-image: none !important;
@@ -1799,7 +1763,7 @@ html[data-book-light="true"] .jbook-page-cover > .jbook-spine-edge {
   min-height: 400px;
   border: none;
   background: transparent;
-  background-image: linear-gradient(90deg, transparent 38px, rgba(220, 53, 69, 0.15) 38px, rgba(220, 53, 69, 0.15) 40px, transparent 40px), repeating-linear-gradient(transparent, transparent 27px, rgba(139, 119, 92, 0.08) 27px, rgba(139, 119, 92, 0.08) 28px);
+  background-image: repeating-linear-gradient(transparent, transparent 27px, rgba(139, 119, 92, 0.08) 27px, rgba(139, 119, 92, 0.08) 28px);
   background-attachment: local;
   font-family: 'Newsreader', 'Cormorant Garamond', serif;
   font-size: 17px;
@@ -1808,42 +1772,36 @@ html[data-book-light="true"] .jbook-page-cover > .jbook-spine-edge {
   resize: none;
   outline: none;
   margin-bottom: 24px;
-  padding: 4px 12px 4px 50px;
+  padding: 4px 0;
 }
 
 
 
 .expanded-journal-actions {
-  padding: 16px 24px 32px !important;
+  border-top: 1px solid rgba(139, 119, 92, 0.12);
+  padding: 24px !important;
+  background: rgba(250, 246, 239, 0.8);
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
+  gap: 16px;
 }
 
-.btn-minimal-done {
+
+
+.journal-expanded-textarea {
+  flex: 1;
+  width: 100%;
+  border: none;
   background: transparent;
-  color: #5a4a38;
-  padding: 8px 40px;
-  font-family: var(--font-sans);
-  font-size: 16px;
-  font-weight: 500;
-  border: 1px solid rgba(139, 119, 92, 0.4);
-  border-radius: 30px;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  padding: 12px 0;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 17px;
+  line-height: 1.6;
+  color: #4a3a28;
+  resize: none;
+  outline: none;
 }
-
-.btn-minimal-done:hover {
-  background: rgba(139, 119, 92, 0.08);
-}
-
-.btn-minimal-done:active {
-  transform: scale(0.96);
-}
-
-
-
-
 
 @keyframes pulse-red {
   0% { transform: scale(1); }
@@ -5666,27 +5624,6 @@ html[data-book-light="true"] .jbook-page-cover > .jbook-spine-edge {
   align-items: center;
   justify-content: center;
   animation: micPulse 2.2s ease-in-out infinite;
-}
-
-.btn-create-book {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 14px;
-  flex-shrink: 0;
-  background: var(--card-bg);
-  border: 1.5px dashed var(--border);
-  border-radius: 12px;
-  color: var(--primary);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 @keyframes micPulse {
