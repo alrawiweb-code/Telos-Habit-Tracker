@@ -17,6 +17,24 @@ import { auth, db, signInWithCredential, GoogleAuthProvider } from './firebaseCo
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { PageFlip } from 'page-flip';
+import { THEMES, applyTheme as applyThemeEngine, migrateLegacyTheme, getThemesByCategory, createThemeCard } from './theme-engine.js';
+import { SpeechRecognition } from '@capacitor-community/speech-recognition';
+
+/**
+ * Global helper for Capacitor Haptics
+ * @param {string} style - 'Heavy' | 'Medium' | 'Light'
+ */
+window.triggerHaptic = function(style = 'Light') {
+  if (window.Capacitor && window.Capacitor.Plugins.Haptics) {
+    window.Capacitor.Plugins.Haptics.impact({ 
+      style: style.charAt(0).toUpperCase() + style.slice(1) 
+    }).catch(()=>{});
+  }
+};
+
+import { BOOK_COVERS, DEFAULT_BOOK_ID, createDefaultBook, createBook, migrateJournalToMultiBook, getBookJournal, renderCoverHTML, createBookCard, createCoverOption, countBookEntries } from './journal-manager.js';
+import { exportBookToPDF, sharePDF } from './pdf-export.js';
+import './monetization-manager.js';
 
 
 const WidgetPlugin = registerPlugin('WidgetPlugin');
@@ -27,11 +45,12 @@ const STORAGE_KEY_LOGS           = 'ee_logs_v2';
 const STORAGE_KEY_JOURNAL        = 'ee_journal_v2';
 const STORAGE_KEY_HABIT_JOURNAL  = 'ee_habit_journal_v1';
 const STORAGE_KEY_NOTIF          = 'ee_notif_v1';
+const STORAGE_KEY_BOOKS          = 'ee_journal_books_v1';
 const SYSTEM_INTRO_ENTRY = {
   text: "Welcome to your personal sanctuary. This is a space for your thoughts, reflections, and growth.",
   ts: 1, // Ensure it's the absolute first
   images: ["/9c7abbb33e2e3c415d3ba97fe8ff186b.jpg"],
-  audio: { data: "/Vinland Saga [AMV] - Chubina ge (1).mp3" },
+  audio: { data: "/audio.mp3" },
   isSystem: true
 };
 
@@ -46,7 +65,6 @@ const HABIT_ICONS = [
   'pets', 'spa', 'medication', 'nature',
   'laptop', 'calendar_today', 'coffee',
 ];
-
 // ─── Media Services ───────────────────────────
 const ImageCompressor = {
   async compress(file, maxWidth = 1200, quality = 0.7) {
@@ -294,25 +312,434 @@ const VoiceService = {
   }
 };
 
+// ─── Native Dictation Service ────────────────
+const DictationService = {
+  isListening: false,
+  
+  async start(prefix) {
+    if (this.isListening) {
+      this.stop();
+      return;
+    }
+
+    try {
+      // Check plugin availability
+      const available = await SpeechRecognition.available();
+      if (!available.available) {
+        showToast('⚠ Native speech recognition not supported on this device.');
+        return;
+      }
+
+      // Check / Request Permissions
+      let permStatus = await SpeechRecognition.checkPermissions();
+      if (permStatus.speechRecognition !== 'granted') {
+        permStatus = await SpeechRecognition.requestPermissions();
+        if (permStatus.speechRecognition !== 'granted') {
+          showToast('⚠ Microphone permission required for voice typing.');
+          return;
+        }
+      }
+
+      this.isListening = true;
+      const btn = document.getElementById(`${prefix}-dictate-btn`);
+      if (btn) btn.classList.add('pulse'); // Add visual feedback
+
+      // Start listening (pops up native Android overlay)
+      const result = await SpeechRecognition.start({
+        language: navigator.language || 'en-US',
+        maxResults: 1,
+        prompt: 'Dictate journal entry...',
+        partialResults: false,
+        popup: true // Shows the native Google Voice typing dialog
+      });
+
+      if (result && result.matches && result.matches.length > 0) {
+        this.insertText(prefix, result.matches[0]);
+      }
+      
+      this.stop(prefix);
+
+    } catch (e) {
+      console.error('Dictation error:', e);
+      this.stop(prefix);
+      showToast('⚠ Voice typing failed.');
+    }
+  },
+
+  stop(prefix) {
+    if (!this.isListening) return;
+    this.isListening = false;
+    try {
+      SpeechRecognition.stop();
+    } catch (e) {}
+    
+    // Remove all partialResults listeners
+    SpeechRecognition.removeAllListeners();
+    
+    const btn = document.getElementById(`${prefix}-dictate-btn`);
+    if (btn) btn.classList.remove('pulse');
+  },
+
+  insertText(prefix, text) {
+    if (!text) return;
+    const textarea = document.getElementById(`${prefix}-textarea`);
+    if (!textarea) return;
+
+    try {
+      // Append with a space if there's already text
+      const s = textarea.selectionStart;
+      const e = textarea.selectionEnd;
+      const t = textarea.value;
+      const prefixText = (s > 0 && t[s-1] !== ' ' && t[s-1] !== '\n') ? ' ' : '';
+      const insertedText = prefixText + text + ' ';
+      
+      textarea.value = t.slice(0, s) + insertedText + t.slice(e);
+      textarea.selectionStart = textarea.selectionEnd = s + insertedText.length;
+    } catch(e) {
+      console.warn('Dictation insertion failed:', e);
+      textarea.value += ' ' + text;
+    }
+  }
+};
+
+// ─── Sketchpad Service ────────────────────────
+const SketchpadService = {
+  canvas: null,
+  ctx: null,
+  isDrawing: false,
+  lastX: 0,
+  lastY: 0,
+  currentContext: null,
+  strokeColor: '#2a2a2a',
+  strokeWidth: 3,
+  isEraser: false,
+  history: [],
+  historyIndex: -1,
+  currentBackground: 'blank',
+
+  init() {
+    this.canvas = document.getElementById('sketch-canvas');
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext('2d');
+    
+    this.canvas.addEventListener('mousedown', this.startDrawing.bind(this));
+    this.canvas.addEventListener('mousemove', this.draw.bind(this));
+    this.canvas.addEventListener('mouseup', this.stopDrawing.bind(this));
+    this.canvas.addEventListener('mouseout', this.stopDrawing.bind(this));
+
+    this.canvas.addEventListener('touchstart', this.startDrawingTouch.bind(this), {passive: false});
+    this.canvas.addEventListener('touchmove', this.drawTouch.bind(this), {passive: false});
+    this.canvas.addEventListener('touchend', this.stopDrawing.bind(this));
+    this.canvas.addEventListener('touchcancel', this.stopDrawing.bind(this));
+
+    document.getElementById('btn-cancel-sketch').addEventListener('click', this.close.bind(this));
+    document.getElementById('btn-save-sketch').addEventListener('click', this.save.bind(this));
+    document.getElementById('btn-clear-sketch').addEventListener('click', () => {
+      this.clearCanvas();
+      this.saveState();
+    });
+    
+    document.getElementById('btn-undo-sketch').addEventListener('click', this.undo.bind(this));
+    document.getElementById('btn-redo-sketch').addEventListener('click', this.redo.bind(this));
+
+    document.querySelectorAll('.sketch-bg-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => this.setBackground(e.currentTarget.dataset.bg));
+    });
+    
+    const colorPicker = document.getElementById('sketch-color-picker');
+    const colorWrapper = document.getElementById('sketch-color-wrapper');
+    if(colorPicker) {
+      colorPicker.addEventListener('input', (e) => {
+        this.isEraser = false;
+        this.strokeColor = e.target.value;
+        if(colorWrapper) colorWrapper.style.backgroundColor = e.target.value;
+        // Re-activate pen tool
+        const penBtn = document.querySelector('.sketch-tool-btn[data-action="pen"]');
+        document.querySelectorAll('.sketch-tool-btn').forEach(b => b.classList.remove('active'));
+        if(penBtn) penBtn.classList.add('active');
+      });
+    }
+
+    document.querySelectorAll('.sketch-tool-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => this.selectTool(e.currentTarget));
+    });
+
+    document.querySelectorAll('.sketch-size-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => this.selectSize(e.currentTarget));
+    });
+
+    document.getElementById('sketch-modal-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'sketch-modal-overlay') this.close();
+    });
+  },
+
+  open(prefix) {
+    this.currentContext = prefix;
+    document.getElementById('sketch-modal-overlay').classList.remove('hidden');
+    setTimeout(() => {
+      this.resize();
+      this.setBackground('blank');
+      this.history = [];
+      this.historyIndex = -1;
+      this.saveState();
+      this.updateHistoryButtons();
+      // Reset to pen tool
+      document.querySelectorAll('.sketch-tool-btn').forEach(b => b.classList.remove('active'));
+      const penBtn = document.querySelector('.sketch-tool-btn[data-action="pen"]');
+      if (penBtn) penBtn.classList.add('active');
+      this.isEraser = false;
+    }, 50);
+  },
+
+  close() {
+    document.getElementById('sketch-modal-overlay').classList.add('hidden');
+    this.currentContext = null;
+  },
+
+  resize() {
+    const rect = this.canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.width = rect.width * dpr;
+    this.canvas.height = rect.height * dpr;
+    this.ctx.scale(dpr, dpr);
+    this.canvas.style.width = `${rect.width}px`;
+    this.canvas.style.height = `${rect.height}px`;
+    // Note: assigning canvas.width/height automatically clears it — no explicit clearCanvas() needed
+  },
+
+  getCoordinates(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    let clientX, clientY;
+    if (e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+  },
+
+  startDrawing(e) {
+    this.isDrawing = true;
+    const { x, y } = this.getCoordinates(e);
+    this.lastX = x;
+    this.lastY = y;
+    this.ctx.beginPath();
+    this.ctx.arc(this.lastX, this.lastY, (this.isEraser ? this.strokeWidth * 3 : this.strokeWidth) / 2, 0, Math.PI * 2);
+    this.ctx.globalCompositeOperation = this.isEraser ? 'destination-out' : 'source-over';
+    this.ctx.fillStyle = this.isEraser ? 'rgba(0,0,0,1)' : this.strokeColor;
+    this.ctx.fill();
+    this.ctx.globalCompositeOperation = 'source-over'; // reset
+  },
+
+  startDrawingTouch(e) {
+    if (e.cancelable) e.preventDefault();
+    this.startDrawing(e);
+  },
+
+  draw(e) {
+    if (!this.isDrawing) return;
+    const { x, y } = this.getCoordinates(e);
+    
+    this.ctx.beginPath();
+    this.ctx.moveTo(this.lastX, this.lastY);
+    this.ctx.lineTo(x, y);
+    this.ctx.globalCompositeOperation = this.isEraser ? 'destination-out' : 'source-over';
+    this.ctx.strokeStyle = this.isEraser ? 'rgba(0,0,0,1)' : this.strokeColor;
+    this.ctx.lineWidth = this.isEraser ? this.strokeWidth * 3 : this.strokeWidth;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    this.ctx.stroke();
+    this.ctx.globalCompositeOperation = 'source-over'; // reset
+
+    this.lastX = x;
+    this.lastY = y;
+  },
+
+  drawTouch(e) {
+    if (e.cancelable) e.preventDefault();
+    this.draw(e);
+  },
+
+  stopDrawing() {
+    if (this.isDrawing) {
+      this.isDrawing = false;
+      this.saveState();
+    }
+  },
+
+  selectTool(btnElement) {
+    if (!btnElement) return;
+    document.querySelectorAll('.sketch-tool-btn').forEach(btn => btn.classList.remove('active'));
+    btnElement.classList.add('active');
+
+    const action = btnElement.dataset.action;
+    this.isEraser = (action === 'eraser');
+  },
+
+  selectSize(btnElement) {
+    if (!btnElement) return;
+    document.querySelectorAll('.sketch-size-btn').forEach(btn => btn.classList.remove('active'));
+    btnElement.classList.add('active');
+    this.strokeWidth = parseInt(btnElement.dataset.size) || 3;
+  },
+
+  clearCanvas() {
+    const rect = this.canvas.parentElement.getBoundingClientRect();
+    this.ctx.clearRect(0, 0, rect.width, rect.height);
+  },
+
+  setBackground(type) {
+    if (!type) return;
+    this.currentBackground = type;
+
+    // Update toggle button states
+    document.querySelectorAll('.sketch-bg-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.bg === type);
+    });
+
+    const container = this.canvas.parentElement;
+    container.className = 'sketch-canvas-container';
+    if (type !== 'blank') {
+      container.classList.add(`bg-${type}`);
+    }
+  },
+
+  toggleBackground() {
+    const types = ['blank', 'lined', 'grid'];
+    let idx = types.indexOf(this.currentBackground);
+    this.setBackground(types[(idx + 1) % types.length]);
+  },
+
+  saveState() {
+    if (this.historyIndex < this.history.length - 1) {
+      this.history = this.history.slice(0, this.historyIndex + 1);
+    }
+    this.history.push(this.canvas.toDataURL('image/png'));
+    this.historyIndex++;
+    if (this.history.length > 20) {
+      this.history.shift();
+      this.historyIndex--;
+    }
+    this.updateHistoryButtons();
+  },
+
+  undo() {
+    if (this.historyIndex > 0) {
+      this.historyIndex--;
+      this.restoreState();
+    }
+  },
+
+  redo() {
+    if (this.historyIndex < this.history.length - 1) {
+      this.historyIndex++;
+      this.restoreState();
+    }
+  },
+
+  restoreState() {
+    const imgData = this.history[this.historyIndex];
+    const img = new Image();
+    img.onload = () => {
+      const rect = this.canvas.parentElement.getBoundingClientRect();
+      this.ctx.clearRect(0, 0, rect.width, rect.height);
+      this.ctx.drawImage(img, 0, 0, rect.width, rect.height);
+      this.updateHistoryButtons();
+    };
+    img.src = imgData;
+  },
+
+  updateHistoryButtons() {
+    const undoBtn = document.getElementById('btn-undo-sketch');
+    const redoBtn = document.getElementById('btn-redo-sketch');
+    if (undoBtn) undoBtn.disabled = this.historyIndex <= 0;
+    if (redoBtn) redoBtn.disabled = this.historyIndex >= this.history.length - 1;
+  },
+
+  async save() {
+    if (!this.currentContext) return;
+    
+    // Create composite canvas for saving
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = this.canvas.width;
+    tempCanvas.height = this.canvas.height;
+    const tempCtx = tempCanvas.getContext('2d');
+    
+    // Fill white background
+    tempCtx.fillStyle = '#ffffff';
+    tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+    
+    // Draw background grid/lines if active
+    if (this.currentBackground !== 'blank') {
+      const dpr = window.devicePixelRatio || 1;
+      tempCtx.lineWidth = 1 * dpr;
+      tempCtx.strokeStyle = '#e0e0e0';
+      tempCtx.beginPath();
+      
+      if (this.currentBackground === 'lined') {
+        const lineSpacing = 30 * dpr;
+        for (let y = lineSpacing; y < tempCanvas.height; y += lineSpacing) {
+          tempCtx.moveTo(0, y);
+          tempCtx.lineTo(tempCanvas.width, y);
+        }
+      } else if (this.currentBackground === 'grid') {
+        const gridSize = 20 * dpr;
+        for (let x = gridSize; x < tempCanvas.width; x += gridSize) {
+          tempCtx.moveTo(x, 0);
+          tempCtx.lineTo(x, tempCanvas.height);
+        }
+        for (let y = gridSize; y < tempCanvas.height; y += gridSize) {
+          tempCtx.moveTo(0, y);
+          tempCtx.lineTo(tempCanvas.width, y);
+        }
+      }
+      tempCtx.stroke();
+    }
+    
+    // Draw the actual drawing
+    tempCtx.drawImage(this.canvas, 0, 0);
+    
+    const dataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
+    
+    if (currentAttachments[this.currentContext]) {
+        currentAttachments[this.currentContext].images.push(dataUrl);
+        updateMediaPreview(this.currentContext);
+    }
+
+    this.close();
+  }
+};
+
 // ─── Media Handlers ───────────────────────────
 function bindMediaEvents() {
   // Journal Screen
   const journalMicBtn = document.getElementById('journal-mic-btn');
+  const journalDictateBtn = document.getElementById('journal-dictate-btn');
   const journalPhotoBtn = document.getElementById('journal-photo-btn');
   const journalPhotoInput = document.getElementById('journal-photo-input');
+  const journalSketchBtn = document.getElementById('journal-sketch-btn');
 
   if (journalMicBtn) journalMicBtn.addEventListener('click', () => handleMicClick('journal'));
+  if (journalDictateBtn) journalDictateBtn.addEventListener('click', () => DictationService.start('journal'));
   if (journalPhotoBtn) journalPhotoBtn.addEventListener('click', () => journalPhotoInput.click());
   if (journalPhotoInput) journalPhotoInput.addEventListener('change', (e) => handleFileChange('journal', e.target.files));
+  if (journalSketchBtn) journalSketchBtn.addEventListener('click', () => SketchpadService.open('journal'));
 
   // Habit Detail Screen
   const detailMicBtn = document.getElementById('detail-mic-btn');
   const detailPhotoBtn = document.getElementById('detail-photo-btn');
   const detailPhotoInput = document.getElementById('detail-photo-input');
+  const detailSketchBtn = document.getElementById('detail-sketch-btn');
 
   if (detailMicBtn) detailMicBtn.addEventListener('click', () => handleMicClick('detail'));
   if (detailPhotoBtn) detailPhotoBtn.addEventListener('click', () => detailPhotoInput.click());
   if (detailPhotoInput) detailPhotoInput.addEventListener('change', (e) => handleFileChange('detail', e.target.files));
+  if (detailSketchBtn) detailSketchBtn.addEventListener('click', () => SketchpadService.open('detail'));
 }
 
 async function handleMicClick(prefix) {
@@ -532,14 +959,12 @@ let recordingStartTime = 0;
 let recordingTimerInterval = null;
 
 let notifSettings = {
-  enabled: false,
-  defaultTimes: { morning: '07:00', afternoon: '13:00', evening: '19:00' },
-  habitReminders: {},   // { habitId: { enabled, time } }
-  smart: { enabled: false, times: ['18:00', '21:00'] },
-  streak: { enabled: false, time: '20:00' },
-  snooze: { enabled: false, options: [30, 60] },
+  morning: { enabled: true, time: '08:00' },
+  evening: { enabled: true, time: '20:00' },
+  streak: true,
   hapticsEnabled: true,
   theme: 'dark',
+  showJournalHint: true,
 };
 
 let selectedDate    = todayKey();
@@ -551,6 +976,12 @@ let activeHabitId   = null;
 let editingHabitId  = null;
 let confirmResolve  = null;
 let historyEditContext = { key: null, habitId: null, index: null };
+let journalBooks    = [];
+let activeBookId    = DEFAULT_BOOK_ID;
+let isSecretsUnlocked = false;
+let passcodeEntry     = '';
+let passcodeMode      = 'verify';  // 'verify' | 'setup' | 'confirm' | 'change_verify'
+let passcodeTempCode  = '';        // holds first entry during setup→confirm flow
 let stripCenterDate     = todayKey(); 
 let modalViewingDate    = new Date();
 
@@ -572,6 +1003,36 @@ function getSummary(done, total) {
 
 // ─── Init ─────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // ── Stable Viewport Height for Capacitor WebView ──
+  // Android WebView has inconsistent 100dvh behavior — URL bar and system
+  // nav bar cause recalculations. Set a CSS custom property from JS.
+  function setAppHeight() {
+    const h = window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${h}px`);
+  }
+  setAppHeight();
+  window.addEventListener('resize', setAppHeight);
+
+  // ── Ad Loading Overlay Listener ──
+  let _adLoadingTimeout = null;
+  document.addEventListener('showAdLoading', (e) => {
+    const overlay = document.getElementById('ad-loading-overlay');
+    if (!overlay) return;
+
+    if (e.detail.loading) {
+      overlay.classList.remove('hidden');
+      // Safety timeout — auto-dismiss after 15s if ad never responds
+      clearTimeout(_adLoadingTimeout);
+      _adLoadingTimeout = setTimeout(() => {
+        overlay.classList.add('hidden');
+        console.warn('[AdLoading] Timeout — overlay auto-dismissed after 15s');
+      }, 15000);
+    } else {
+      clearTimeout(_adLoadingTimeout);
+      overlay.classList.add('hidden');
+    }
+  });
+
   // ── Onboarding Sequence ──
   if (!localStorage.getItem('telos_onboarded')) {
     const obScreen = document.getElementById('screen-onboarding');
@@ -615,7 +1076,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
       requestNotifPermission().then(granted => {
         if (granted) {
-          notifSettings.enabled = true;
           try { localStorage.setItem('telos_notif', JSON.stringify(notifSettings)); } catch(e) {}
           renderNotifications();
           scheduleNotifications().catch(() => {});
@@ -639,25 +1099,25 @@ document.addEventListener('DOMContentLoaded', () => {
   renderNotifications();
   bindNotifUI();
   applyTheme();
+  applyBookColors();
 
   // Initialize Media Services
   VoiceService.init();
+  SketchpadService.init();
   bindMediaEvents();
 
   // Set up native notification channel + tap handler
   setupNotifChannel();
   bindNotifTapHandler();
 
-  // Re-schedule notifications if they were previously enabled
-  // (runs silently on native; no-ops gracefully on web)
-  if (notifSettings.enabled) {
+  // Re-schedule notifications only for returning users who have already granted permission.
+  // New users will be prompted AFTER the tutorial ends via finishTutorial().
+  if (localStorage.getItem('telos_notif_prompted')) {
     scheduleNotifications(true).catch(() => {});
   }
 
   // Configure native status bar
-  try {
-    StatusBar.setStyle({ style: notifSettings.theme === 'dark' ? Style.Dark : Style.Light });
-  } catch(e) { /* not on native */ }
+  // StatusBar style is handled by applyTheme() above
 
   // Listen for native widget intents (only add_intention and add_journal now)
   App.addListener('appUrlOpen', data => {
@@ -683,13 +1143,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, false);
 
-  // Splash Screen Dismissal
+  // Splash Screen Dismissal — waits for icon font readiness
   const splash = document.getElementById('splash-screen');
   if (splash) {
     if (!localStorage.getItem('telos_onboarded')) {
       splash.remove();
     } else {
       let splashTimeout;
+
       const dismissSplash = () => {
         if (splashTimeout) clearTimeout(splashTimeout);
         if (!splash.classList.contains('fade-out')) {
@@ -698,7 +1159,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       };
 
-      // Auto-dismiss after 1.8s
+      // Wait for icon font to be ready BEFORE dismissing splash.
+      // This eliminates the ligature-text flash on cold starts.
+      const fontReady = document.fonts && document.fonts.ready
+        ? document.fonts.ready
+        : Promise.resolve();
+      const safetyTimeout = new Promise(r => setTimeout(r, 3000));
+
+      Promise.race([fontReady, safetyTimeout]).then(() => {
+        // Ensure fonts-loaded class is set (belt-and-suspenders with head script)
+        document.documentElement.classList.add('fonts-loaded');
+        // Small delay to let the first paint with real icons settle
+        setTimeout(dismissSplash, 400);
+      });
+
+      // If fonts load super fast, still show splash for minimum 1.2s for branding
       splashTimeout = setTimeout(dismissSplash, 1800);
 
       // Skip on double-tap
@@ -721,13 +1196,20 @@ function bindEventListeners() {
   try {
     App.addListener('backButton', () => {
       // 1. Closing Overlays
+      if (document.getElementById('tutorial-overlay') && !document.getElementById('tutorial-overlay').classList.contains('hidden')) { finishTutorial(); return; }
+      if (document.getElementById('mic-permission-overlay') && !document.getElementById('mic-permission-overlay').classList.contains('hidden')) { document.getElementById('mic-perm-cancel').click(); return; }
+      if (document.getElementById('conflict-modal-overlay') && !document.getElementById('conflict-modal-overlay').classList.contains('hidden')) { document.getElementById('btn-conflict-cancel').click(); return; }
+      if (document.getElementById('clear-data-modal-overlay') && !document.getElementById('clear-data-modal-overlay').classList.contains('hidden')) { document.getElementById('btn-close-clear-data').click(); return; }
       if (document.getElementById('confirm-overlay') && !document.getElementById('confirm-overlay').classList.contains('hidden')) { closeConfirm(); return; }
       if (document.getElementById('history-modal-overlay') && !document.getElementById('history-modal-overlay').classList.contains('hidden')) { closeHistoryModal(); return; }
       if (document.getElementById('calendar-modal-overlay') && !document.getElementById('calendar-modal-overlay').classList.contains('hidden')) { closeCalendarModal(); return; }
       if (document.getElementById('edit-modal-overlay') && !document.getElementById('edit-modal-overlay').classList.contains('hidden')) { closeEditModal(); return; }
       if (document.getElementById('modal-overlay') && !document.getElementById('modal-overlay').classList.contains('hidden')) { closeAddModal(); return; }
       if (document.getElementById('journal-expanded-modal') && !document.getElementById('journal-expanded-modal').classList.contains('hidden')) { closeExpandedJournal(); return; }
-      if (document.getElementById('journal-archive-modal') && !document.getElementById('journal-archive-modal').classList.contains('hidden')) { closeJournalArchive(); return; }
+      if (document.getElementById('journal-archive-modal-overlay') && !document.getElementById('journal-archive-modal-overlay').classList.contains('hidden')) { closeJournalArchive(); return; }
+      if (document.getElementById('book-catalog-overlay') && !document.getElementById('book-catalog-overlay').classList.contains('hidden')) { closeBookCatalog(); return; }
+      if (document.getElementById('new-book-overlay') && !document.getElementById('new-book-overlay').classList.contains('hidden')) { closeCreateBookModal(); return; }
+      if (document.getElementById('sketch-modal-overlay') && !document.getElementById('sketch-modal-overlay').classList.contains('hidden')) { SketchpadService.close(); return; }
 
       // 2. Closing inner screens
       if (document.getElementById('screen-habit-detail') && document.getElementById('screen-habit-detail').classList.contains('active')) { closeHabitDetail(); return; }
@@ -736,16 +1218,45 @@ function bindEventListeners() {
       if (document.getElementById('screen-about') && document.getElementById('screen-about').classList.contains('active')) { switchScreen('profile'); return; }
       if (document.getElementById('screen-cloud-sync') && document.getElementById('screen-cloud-sync').classList.contains('active')) { switchScreen('profile'); return; }
       if (document.getElementById('screen-privacy') && document.getElementById('screen-privacy').classList.contains('active')) { switchScreen('profile'); return; }
+      if (document.getElementById('screen-themes') && document.getElementById('screen-themes').classList.contains('active')) { switchScreen('profile'); return; }
 
-      // 3. Exit app if at top level
+      // 3. Onboarding navigation
+      if (currentScreen === 'onboarding') {
+        const step2 = document.getElementById('onboarding-step-2');
+        if (step2 && step2.classList.contains('active')) {
+          step2.classList.remove('active');
+          document.getElementById('onboarding-step-1').classList.add('active');
+          return;
+        }
+        App.exitApp();
+        return;
+      }
+
+      // 4. Navigate to Today screen from other top-level tabs before exiting
+      if (currentScreen !== 'today') {
+        const todayNav = document.querySelector('.nav-item[data-screen="today"]');
+        if (todayNav) { switchScreen('today', todayNav); return; }
+      }
+
+      // 5. Exit app if already at top level (today)
       App.exitApp();
     });
   } catch(e) {}
+
+  // Long-press state flags (must be declared before click handler)
+  let navJournalTimer = null;
+  let navJournalLongPressActive = false;
+  let navJournalLongPressFired = false;
 
   // Bottom navigation
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', (e) => {
       e.preventDefault();
+      // If Journal long-press just opened the catalog, block this click
+      if (navJournalLongPressFired) {
+        navJournalLongPressFired = false;
+        return;
+      }
       if (notifSettings.hapticsEnabled) {
         try { Haptics.impact({ style: ImpactStyle.Light }); } catch(err) {}
       }
@@ -766,6 +1277,9 @@ function bindEventListeners() {
   document.getElementById('modal-close-btn').addEventListener('click', () => closeAddModal());
   document.getElementById('btn-cancel-modal').addEventListener('click', () => closeAddModal());
   document.getElementById('btn-add-habit').addEventListener('click', () => addHabit());
+
+  // Premium upsell modal listeners
+  initPremiumUpsellListeners();
 
   // Edit Modal
   document.getElementById('edit-modal-overlay').addEventListener('click', (e) => {
@@ -791,7 +1305,247 @@ function bindEventListeners() {
   document.getElementById('btn-browse-journal').addEventListener('click', () => {
     openJournalArchive();
   });
+
+
+  // Book catalog / switcher (Long press on bottom nav)
+  const navJournalBtn = document.getElementById('nav-journal');
+  if (navJournalBtn) {
+    const startNavPress = (e) => {
+      if (navJournalLongPressActive) return;
+      navJournalLongPressActive = true;
+      navJournalLongPressFired = false;
+
+      navJournalTimer = setTimeout(() => {
+        navJournalTimer = null;
+        navJournalLongPressFired = true;
+        // Trigger double haptic for successful long-press activation
+        if (notifSettings.hapticsEnabled) {
+          try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(err) {}
+          setTimeout(() => {
+            try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(err) {}
+          }, 120);
+        }
+        
+        // Dismiss hint bubble permanently if they discovered it
+        markJournalHintSeen();
+        
+        openBookCatalog();
+      }, 500); 
+    };
+    const endNavPress = () => {
+      navJournalLongPressActive = false;
+      if (navJournalTimer) {
+        clearTimeout(navJournalTimer);
+        navJournalTimer = null;
+      }
+      // Clear the block flag shortly after touch ends so it doesn't trap unrelated future clicks
+      setTimeout(() => {
+        navJournalLongPressFired = false;
+      }, 300);
+    };
+
+    navJournalBtn.addEventListener('touchstart', startNavPress, {passive: true});
+    navJournalBtn.addEventListener('pointerdown', startNavPress);
+    
+    navJournalBtn.addEventListener('touchend', endNavPress);
+    navJournalBtn.addEventListener('touchcancel', endNavPress);
+    navJournalBtn.addEventListener('pointerup', endNavPress);
+    navJournalBtn.addEventListener('pointercancel', endNavPress);
+    
+    navJournalBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  document.getElementById('btn-close-catalog').addEventListener('click', () => closeBookCatalog());
+  document.getElementById('btn-create-book').addEventListener('click', () => {
+    // closeBookCatalog(); // Wait, let's keep it open or close it? The original closed it. 
+    // Actually keep original behavior
+    closeBookCatalog();
+    openCreateBookModal();
+  });
+  document.getElementById('btn-cancel-new-book').addEventListener('click', () => closeCreateBookModal());
+  document.getElementById('btn-confirm-new-book').addEventListener('click', () => confirmCreateBook());
+  document.getElementById('book-catalog-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'book-catalog-overlay') closeBookCatalog();
+  });
+  document.getElementById('new-book-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'new-book-overlay') closeCreateBookModal();
+  });
+  // Premium Upsell Modal (fallback from MonetizationManager when Adapty paywall fails)
+  document.addEventListener('showPremiumUpsell', (e) => {
+    // Delegate to the unified modal function — no callback needed for fallback path
+    // (Adapty's own purchase success handler covers the upgrade flow)
+    showPremiumUpsellModal(e.detail.triggerId, null);
+  });
+
+  document.getElementById('btn-upsell-close')?.addEventListener('click', () => {
+    document.getElementById('premium-upsell-overlay').classList.add('hidden');
+  });
   
+  document.getElementById('premium-upsell-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'premium-upsell-overlay') {
+      document.getElementById('premium-upsell-overlay').classList.add('hidden');
+    }
+  });
+  // Adapty Premium Logic
+  document.getElementById('btn-upsell-upgrade')?.addEventListener('click', async () => {
+    if (window.MonetizationManager) {
+      console.log('Initiating Adapty purchase flow via fallback modal...');
+      // Instead of instant upgrade, try to launch the paywall again. 
+      // If it failed before, it might fail again, but we shouldn't just give it away for free.
+      const launched = await window.MonetizationManager.launchAdaptyPaywall('paywall');
+      if (!launched) {
+          showToast('Store connection failed. Please try again later.');
+      } else {
+          document.getElementById('premium-upsell-overlay').classList.add('hidden');
+      }
+    }
+  });
+
+  document.getElementById('btn-upsell-restore')?.addEventListener('click', async () => {
+    showToast('Restoring purchases...');
+    if (window.MonetizationManager) {
+      const isSubscribed = await window.MonetizationManager.restorePurchases();
+      if (isSubscribed) {
+        document.getElementById('premium-upsell-overlay').classList.add('hidden');
+        showToast('Purchases restored successfully!');
+        renderBookCatalog();
+      } else {
+        showToast('No active subscription found.', 3000);
+      }
+    }
+  });
+
+  // Book Context Menu (Long Press)
+  document.addEventListener('openBookContextMenu', (e) => {
+    contextMenuBookId = e.detail.book.id;
+    document.getElementById('context-menu-book-title').textContent = e.detail.book.name;
+    const hideBtnIcon = document.getElementById('context-icon-hide');
+    const hideBtnText = document.getElementById('context-text-hide');
+    if (hideBtnIcon && hideBtnText) {
+      if (e.detail.book.isHidden) {
+        hideBtnIcon.textContent = 'lock_open';
+        hideBtnText.textContent = 'Remove from Secrets';
+      } else {
+        hideBtnIcon.textContent = 'lock';
+        hideBtnText.textContent = 'Hide Journal';
+      }
+    }
+    document.getElementById('book-context-menu-overlay').classList.remove('hidden');
+    triggerHaptic('Medium');
+  });
+
+  // Reward forfeit dialog — shown when user closes a rewarded ad early
+  document.addEventListener('showRewardForfeitDialog', () => {
+    const overlay = document.getElementById('reward-forfeit-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+  });
+
+  // Handle banner ad layout shifts
+  document.addEventListener('bannerAdLoaded', () => {
+    console.log('[UI] Banner ad loaded, refreshing journal layout...');
+    if (currentScreen === 'journal' && pageFlip) {
+      setTimeout(() => {
+        pageFlip.update();
+      }, 300); // Small delay for DOM to settle
+    }
+  });
+
+  document.getElementById('btn-forfeit-skip')?.addEventListener('click', () => {
+    // User chooses to forfeit the reward — clear pending state
+    if (window.MonetizationManager) {
+      window.MonetizationManager._pendingRewardCallback = null;
+      window.MonetizationManager._pendingActionContext = null;
+      window.MonetizationManager._runRewardedLogic = null;
+    }
+    document.getElementById('reward-forfeit-overlay').classList.add('hidden');
+    showToast('Reward skipped.');
+  });
+
+  document.getElementById('btn-forfeit-retry')?.addEventListener('click', async () => {
+    document.getElementById('reward-forfeit-overlay').classList.add('hidden');
+    // Replay only the ad, not the paywall
+    if (window.MonetizationManager) {
+      await window.MonetizationManager.replayRewardedAd();
+    }
+  });
+
+  document.getElementById('book-context-menu-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'book-context-menu-overlay') closeBookContextMenu();
+  });
+  
+  document.getElementById('btn-context-edit')?.addEventListener('click', () => {
+    const bookId = contextMenuBookId;
+    closeBookContextMenu();
+    closeBookCatalog();
+    openCreateBookModal(bookId);
+  });
+  
+  document.getElementById('btn-context-hide')?.addEventListener('click', () => {
+    const book = journalBooks.find(b => b.id === contextMenuBookId);
+    if(book) {
+      if (!book.isHidden && window.MonetizationManager) {
+        const currentSecretsCount = journalBooks.filter(b => b.isHidden).length;
+        if (!window.MonetizationManager.canMoveToSecrets(currentSecretsCount)) {
+          closeBookContextMenu();
+          window.MonetizationManager.showUpsellModal('secrets_locked');
+          return;
+        }
+      }
+      
+      if (journalBooks.filter(b => !b.isHidden).length === 1 && !book.isHidden) {
+        showToast("Cannot hide your only visible journal.");
+      } else {
+        book.isHidden = !book.isHidden;
+        save();
+        closeBookContextMenu();
+        renderBookCatalog();
+        showToast(book.isHidden ? 'Moved to Secrets' : 'Removed from Secrets');
+        triggerHaptic();
+      }
+    }
+  });
+  
+  document.getElementById('btn-context-export')?.addEventListener('click', async () => {
+    const book = journalBooks.find(b => b.id === contextMenuBookId);
+    closeBookContextMenu();
+    if(book) {
+      const doExport = async () => {
+        const bookJournal = getBookJournal(journal, book.id);
+        
+        const entryCount = countBookEntries(journal, book.id);
+        if (entryCount === 0) {
+          showToast('This journal has no entries to export.');
+          return;
+        }
+        
+        showToast('Generating PDF...', 2000);
+        try {
+          const blob = await exportBookToPDF(book, bookJournal);
+          const safeName = book.name.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_');
+          const filename = `Telos_${safeName}_${new Date().toISOString().slice(0,10)}.pdf`;
+          await sharePDF(blob, filename);
+          triggerHaptic();
+        } catch (e) {
+          console.error('PDF export error:', e);
+          showToast('Export failed. Please try again.');
+        }
+      };
+
+      if (window.MonetizationManager && !window.MonetizationManager.canExportPDF()) {
+        showPremiumUpsellModal('pdf_export', doExport);
+        return;
+      }
+      
+      doExport();
+    }
+  });
+  
+  document.getElementById('btn-context-delete')?.addEventListener('click', () => {
+    const book = journalBooks.find(b => b.id === contextMenuBookId);
+    const bookId = contextMenuBookId;
+    closeBookContextMenu();
+    if(book) deleteBookPrompt(bookId, book.name);
+  });
   document.getElementById('btn-expand-journal')?.addEventListener('click', () => openExpandedJournal());
   document.getElementById('btn-save-expanded-journal')?.addEventListener('click', () => saveExpandedJournal());
 
@@ -811,17 +1565,22 @@ function bindEventListeners() {
   if (btnClearMenu) {
     btnClearMenu.addEventListener('click', () => confirmClear());
   }
-  // Legacy button (if still in DOM during transition)
-  const btnClearLegacy = document.getElementById('btn-clear-data');
-  if (btnClearLegacy) {
-    btnClearLegacy.addEventListener('click', () => confirmClear());
-  }
+  // Legacy button removed
 
-  // Profile Menu Navigation
+
   document.getElementById('menu-all-habits').addEventListener('click', () => switchScreen('all-habits'));
   document.getElementById('menu-notif-settings').addEventListener('click', () => switchScreen('notif-settings'));
-  document.getElementById('menu-cloud-sync').addEventListener('click', () => switchScreen('cloud-sync'));
+  document.getElementById('menu-cloud-sync').addEventListener('click', () => {
+    if (window.MonetizationManager && !window.MonetizationManager.isPremiumUser()) {
+      window.MonetizationManager.showUpsellModal('cloud_sync');
+      return;
+    }
+    switchScreen('cloud-sync');
+  });
   document.getElementById('menu-about').addEventListener('click', () => switchScreen('about'));
+  document.getElementById('menu-change-passcode')?.addEventListener('click', () => {
+    openPasscodeModal(getStoredPasscode() ? 'change_verify' : 'setup');
+  });
   document.getElementById('menu-privacy').addEventListener('click', () => {
     switchScreen('privacy');
     const iframe = document.getElementById('privacy-iframe');
@@ -837,15 +1596,61 @@ function bindEventListeners() {
   document.getElementById('btn-back-about').addEventListener('click', () => switchScreen('profile'));
   document.getElementById('btn-back-privacy').addEventListener('click', () => switchScreen('profile'));
 
-  // Settings Toggles
-  document.getElementById('toggle-theme').addEventListener('change', (e) => {
-    notifSettings.theme = e.target.checked ? 'dark' : 'light';
-    save();
-    applyTheme();
+  // --- About Us Easter Egg (20 taps to unlock Premium) ---
+  let logoTapCount = 0;
+  let logoTapTimer = null;
+  document.getElementById('about-logo-tap')?.addEventListener('click', () => {
+    logoTapCount++;
+    window.triggerHaptic('Light');
+    
+    // Bounce animation feedback
+    const container = document.getElementById('about-logo-container');
+    if (container) {
+      container.style.transform = 'scale(0.9)';
+      setTimeout(() => container.style.transform = 'scale(1)', 100);
+    }
+
+    if (logoTapTimer) clearTimeout(logoTapTimer);
+    
+    if (logoTapCount >= 20) {
+      logoTapCount = 0;
+      if (window.MonetizationManager) {
+        window.MonetizationManager.setPremiumState(true);
+        window.triggerHaptic('Heavy');
+        alert('Congratulations! Telos Premium has been unlocked. Thank you for your support!');
+      }
+    } else {
+      // Reset counter if no tap for 2 seconds
+      logoTapTimer = setTimeout(() => {
+        logoTapCount = 0;
+      }, 2000);
+    }
   });
+
+  // Themes screen navigation
+  document.getElementById('menu-themes').addEventListener('click', () => {
+    switchScreen('themes');
+    renderThemePicker();
+  });
+  document.getElementById('btn-back-themes').addEventListener('click', () => switchScreen('profile'));
 
   document.getElementById('toggle-haptics').addEventListener('change', (e) => {
     notifSettings.hapticsEnabled = e.target.checked;
+    save();
+  });
+
+  document.getElementById('toggle-journal-hint').addEventListener('change', (e) => {
+    // HARD PAYWALL: Only premium users can change this setting
+    if (window.MonetizationManager && !window.MonetizationManager.isPremiumUser()) {
+      e.preventDefault();
+      // Revert visually immediately
+      e.target.checked = !e.target.checked;
+      window.MonetizationManager.showUpsellModal('journal_hint_toggle');
+      return;
+    }
+    
+    notifSettings.showJournalHint = e.target.checked;
+    applyJournalHintVisibility();
     save();
   });
 
@@ -913,6 +1718,13 @@ function bindEventListeners() {
   });
 }
 
+function applyJournalHintVisibility() {
+  const sublabel = document.getElementById('nav-journal-sublabel');
+  if (sublabel) {
+    sublabel.style.display = notifSettings.showJournalHint !== false ? '' : 'none';
+  }
+}
+
 // ─── Storage (with error handling) ────────────
 function loadData() {
   try {
@@ -920,18 +1732,71 @@ function loadData() {
     logs         = JSON.parse(localStorage.getItem(STORAGE_KEY_LOGS))          || {};
     journal      = JSON.parse(localStorage.getItem(STORAGE_KEY_JOURNAL))       || {};
     habitJournal = JSON.parse(localStorage.getItem(STORAGE_KEY_HABIT_JOURNAL)) || {};
+    journalBooks = JSON.parse(localStorage.getItem(STORAGE_KEY_BOOKS))         || [];
     const savedNotif = JSON.parse(localStorage.getItem(STORAGE_KEY_NOTIF));
-    if (savedNotif) notifSettings = Object.assign(notifSettings, savedNotif);
+    if (savedNotif) {
+      notifSettings = Object.assign(notifSettings, savedNotif);
+      // Migration to minimalist schema
+      if (typeof notifSettings.morning !== 'object') notifSettings.morning = { enabled: true, time: '08:00' };
+      if (typeof notifSettings.evening !== 'object') notifSettings.evening = { enabled: true, time: '20:00' };
+      if (typeof notifSettings.streak === 'object' || typeof notifSettings.streak === 'undefined') notifSettings.streak = true;
+      if (typeof notifSettings.showJournalHint === 'undefined') notifSettings.showJournalHint = true;
+      delete notifSettings.enabled;
+      delete notifSettings.defaultTimes;
+      delete notifSettings.habitReminders;
+      delete notifSettings.smart;
+      delete notifSettings.snooze;
+    }
   } catch(e) {
-    habits = []; logs = {}; journal = {}; habitJournal = {};
+    habits = []; logs = {}; journal = {}; habitJournal = {}; journalBooks = [];
+  }
+
+  applyJournalHintVisibility();
+
+  // ── Multi-Book Migration ──
+  // If journalBooks is empty but journal has data, migrate from flat to multi-book
+  if (journalBooks.length === 0) {
+    journalBooks = [createDefaultBook()];
+  }
+  // Migrate flat journal { dateKey: [entries] } → { bookId: { dateKey: [entries] } }
+  journal = migrateJournalToMultiBook(journal);
+
+  // ── Cover ID Migration (v1.5) ──
+  // Remap old cover IDs to new premium IDs
+  const COVER_ID_MAP = {
+    forest: 'verdant', pink: 'blossom', goth: 'obsidian',
+    red: 'obsidian', playful: 'moonlit', rose: 'blossom',
+    midnight: 'moonlit', prism: 'moonlit', amour: 'amore',
+    ember: 'classic', pride: 'moonlit'
+  };
+  journalBooks.forEach(book => {
+    if (COVER_ID_MAP[book.cover]) book.cover = COVER_ID_MAP[book.cover];
+  });
+  
+  // Restore active book (default to first book)
+  activeBookId = notifSettings.activeBookId || journalBooks[0].id;
+  // Validate activeBookId still exists
+  if (!journalBooks.find(b => b.id === activeBookId)) activeBookId = journalBooks[0].id;
+
+  // Secrets safeguard on startup: if active is hidden but secrets locked
+  const activeBook = journalBooks.find(b => b.id === activeBookId);
+  if (activeBook && activeBook.isHidden && !isSecretsUnlocked) {
+    const firstVisible = journalBooks.find(b => !b.isHidden);
+    activeBookId = firstVisible ? firstVisible.id : journalBooks[0].id;
+    notifSettings.activeBookId = activeBookId;
   }
 
   // Migration: Ensure all entries are arrays of objects {text, ts}
-  Object.keys(journal).forEach(k => {
-    if (typeof journal[k] === 'string') journal[k] = [{ text: journal[k], ts: Date.now() }];
-    if (Array.isArray(journal[k])) {
-      journal[k] = journal[k].map(item => typeof item === 'string' ? { text: item, ts: Date.now() } : item);
-    }
+  // Now operates on each book's journal data
+  Object.keys(journal).forEach(bookId => {
+    const bookData = journal[bookId];
+    if (typeof bookData !== 'object' || Array.isArray(bookData)) return;
+    Object.keys(bookData).forEach(k => {
+      if (typeof bookData[k] === 'string') bookData[k] = [{ text: bookData[k], ts: Date.now() }];
+      if (Array.isArray(bookData[k])) {
+        bookData[k] = bookData[k].map(item => typeof item === 'string' ? { text: item, ts: Date.now() } : item);
+      }
+    });
   });
   Object.keys(habitJournal).forEach(hId => {
     Object.keys(habitJournal[hId]).forEach(k => {
@@ -952,7 +1817,6 @@ function loadData() {
       { id: uid(), name: 'Morning Meditation', desc: '15 minutes of silence',    icon: 'self_improvement', schedule: { type: 'daily' }, createdAt: b },
       { id: uid(), name: 'Hydration',          desc: 'Drink 1L before noon',     icon: 'local_drink',      schedule: { type: 'daily' }, createdAt: b },
       { id: uid(), name: 'Read 20 pages',      desc: 'Atomic Habits',            icon: 'auto_stories',     schedule: { type: 'daily' }, createdAt: b },
-      { id: uid(), name: 'Evening Walk',       desc: '30 minutes to disconnect', icon: 'directions_walk',  schedule: { type: 'daily' }, createdAt: b },
     ];
 
     logs[t] = { [habits[0].id]: true, [habits[1].id]: true };
@@ -960,7 +1824,8 @@ function loadData() {
     logs[y] = {};
     logs[b] = {};
 
-    journal[t] = [{ text: "Starting my journey with Telos today. The interface feels calm and focused.", ts: Date.now() }];
+    journal[DEFAULT_BOOK_ID] = journal[DEFAULT_BOOK_ID] || {};
+    journal[DEFAULT_BOOK_ID][t] = [{ text: "Starting my journey with Telos today. The interface feels calm and focused.", ts: Date.now() }];
 
     habitJournal[habits[0].id] = {
       [y]: [{ text: "Focus was better today. Found a nice 15 min guided track.", ts: Date.now() - 15000 }],
@@ -977,6 +1842,9 @@ function save() {
     localStorage.setItem(STORAGE_KEY_LOGS,          JSON.stringify(logs));
     localStorage.setItem(STORAGE_KEY_JOURNAL,       JSON.stringify(journal));
     localStorage.setItem(STORAGE_KEY_HABIT_JOURNAL, JSON.stringify(habitJournal));
+    localStorage.setItem(STORAGE_KEY_BOOKS,          JSON.stringify(journalBooks));
+    // Persist active book choice in notifSettings for quick restore
+    notifSettings.activeBookId = activeBookId;
     localStorage.setItem(STORAGE_KEY_NOTIF,         JSON.stringify(notifSettings));
 
     // Track local modification time for cloud sync dirty-checking
@@ -1006,6 +1874,36 @@ function save() {
   } catch (e) {
     showToast('⚠ Storage full — changes may not persist.');
   }
+}
+
+// ─── Active Book Journal Accessor ─────────
+function getActiveJournal() {
+  return getBookJournal(journal, activeBookId);
+}
+
+// ─── Apply Book Colors to CSS Custom Properties ─────────
+// Separates book-contextual colors from global app theme
+function applyBookColors() {
+  const book = journalBooks.find(b => b.id === activeBookId) || journalBooks[0];
+  if (!book) return;
+  const cover = BOOK_COVERS[book.cover] || BOOK_COVERS.classic;
+  const root = document.documentElement;
+  root.style.setProperty('--book-accent', cover.accent);
+  root.style.setProperty('--book-text', cover.textColor);
+  root.style.setProperty('--book-bg', cover.bgGradient);
+  // Parse a darker version for button backgrounds
+  // Extract the first color stop from the gradient for solid bg use
+  const bgMatch = cover.bgGradient.match(/#[0-9a-fA-F]{6}/);
+  const solidBg = bgMatch ? bgMatch[0] : '#1a1a2e';
+  root.style.setProperty('--book-bg-solid', solidBg);
+  root.style.setProperty('--book-accent-15', cover.accent + '26'); // 15% opacity
+  root.style.setProperty('--book-accent-30', cover.accent + '4d'); // 30% opacity
+  root.style.setProperty('--book-accent-50', cover.accent + '80'); // 50% opacity
+
+  // Flag light-background covers so CSS can suppress dark overlay effects
+  const LIGHT_COVERS = ['ivory'];
+  const isLight = LIGHT_COVERS.includes(book.cover);
+  root.setAttribute('data-book-light', isLight ? 'true' : 'false');
 }
 
 function saveNotif() {
@@ -1085,7 +1983,7 @@ try {
       syncWidgetToggles();
       startWidgetSync();
       // Refresh the 7-day notification window every time the app comes to foreground
-      if (notifSettings.enabled) scheduleNotifications().catch(() => {});
+      scheduleNotifications().catch(() => {});
     } else {
       stopWidgetSync();
       // Stop all playing journal audio when app goes to background
@@ -1904,6 +2802,9 @@ function toggleHabit(id, cardEl) {
     cardEl.classList.add('completed');
     icon.style.fontVariationSettings = "'FILL' 1";
     nameEl.classList.add('habit-name--done');
+    if (window.MonetizationManager) {
+      window.MonetizationManager.onFirstHabitChecked();
+    }
   } else {
     cardEl.classList.remove('completed', 'completing');
     icon.style.fontVariationSettings = "'FILL' 0";
@@ -1946,6 +2847,121 @@ function renderIconPicker(containerId) {
 }
 
 function openAddModal() {
+  // Always open the modal — the gate is checked at save time (in addHabit)
+  proceedOpenAddModal();
+}
+
+// ─── Premium Upsell Modal ─────────────────────────
+let _premiumUpsellOnSuccess = null;
+let _premiumUpsellActionType = null;
+
+function showPremiumUpsellModal(actionType, onSuccess) {
+  _premiumUpsellOnSuccess = onSuccess;
+  _premiumUpsellActionType = actionType;
+
+  const titleEl = document.getElementById('upsell-title');
+  const subtitleEl = document.getElementById('upsell-subtitle');
+  const adBtn = document.getElementById('btn-upsell-watch-ad');
+  let isHardPaywall = false;
+
+  // Map action types to appropriate copy & paywall type
+  if (actionType === 'library_full') {
+    titleEl.textContent = 'Library Full';
+    subtitleEl.textContent = 'Upgrade to Premium to create unlimited journals.';
+    isHardPaywall = true;
+  } else if (actionType === 'secrets_locked') {
+    titleEl.textContent = 'Secure Your Secrets';
+    subtitleEl.textContent = 'Upgrade to Premium to lock journals away in your Secrets.';
+    isHardPaywall = true;
+  } else if (actionType === 'cloud_sync') {
+    titleEl.textContent = 'Cloud Backup';
+    subtitleEl.textContent = 'Upgrade to Premium to securely backup your data to the cloud.';
+    isHardPaywall = true;
+  } else if (actionType === 'pdf_export') {
+    titleEl.textContent = 'High-Quality Exports';
+    subtitleEl.textContent = 'Upgrade to Premium to export your journals as beautiful PDFs.';
+  } else if (actionType === 'add_habit') {
+    titleEl.textContent = 'Unlock More Intentions';
+    subtitleEl.textContent = 'Upgrade to Premium for unlimited intentions, or watch an ad to continue.';
+  } else if (actionType === 'profile_banner') {
+    titleEl.textContent = 'Unlock Premium';
+    subtitleEl.textContent = 'Elevate your journaling experience.';
+    isHardPaywall = true;
+  } else if (actionType === 'journal_hint_toggle') {
+    titleEl.textContent = 'Premium Interface';
+    subtitleEl.textContent = 'Upgrade to Premium to customize your workspace and hide hints.';
+    isHardPaywall = true;
+  } else {
+    titleEl.textContent = 'Unlock Premium';
+    subtitleEl.textContent = 'Elevate your journaling experience.';
+  }
+
+  // Hard paywall: HIDE the "Watch Ad" button entirely — no ad bypass allowed
+  if (isHardPaywall && adBtn) {
+    adBtn.style.display = 'none';
+  } else if (adBtn) {
+    adBtn.style.display = 'block';
+  }
+
+  document.getElementById('premium-upsell-overlay').classList.remove('hidden');
+  triggerHaptic('Medium');
+}
+
+function closePremiumUpsellModal() {
+  document.getElementById('premium-upsell-overlay').classList.add('hidden');
+  _premiumUpsellOnSuccess = null;
+  _premiumUpsellActionType = null;
+}
+
+// Wire premium upsell buttons (called once during init)
+function initPremiumUpsellListeners() {
+  // Close button
+  document.getElementById('btn-upsell-close')?.addEventListener('click', () => {
+    closePremiumUpsellModal();
+  });
+
+  // Overlay click to close
+  document.getElementById('premium-upsell-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'premium-upsell-overlay') closePremiumUpsellModal();
+  });
+
+  // Upgrade to Premium → launch Adapty paywall
+  document.getElementById('btn-upsell-upgrade')?.addEventListener('click', async () => {
+    const onSuccess = _premiumUpsellOnSuccess;
+    const actionType = _premiumUpsellActionType;
+    closePremiumUpsellModal();
+
+    if (window.MonetizationManager) {
+      const placementId = 'paywall';
+      await window.MonetizationManager.launchAdaptyPaywall(
+        'paywall',
+        null,  // onClose — do nothing, user already saw our modal
+        () => { if (onSuccess) onSuccess(); } // onPurchaseSuccess
+      );
+    }
+  });
+
+  // Watch Ad to Continue → play rewarded ad directly (no paywall)
+  document.getElementById('btn-upsell-watch-ad')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.classList.add('is-loading');
+
+    const onSuccess = _premiumUpsellOnSuccess;
+    const actionType = _premiumUpsellActionType;
+
+    if (window.MonetizationManager) {
+      await window.MonetizationManager.showRewardedAd(actionType || 'add_habit', () => {
+        if (onSuccess) onSuccess();
+      });
+    }
+    
+    // Close modal and remove loading state after ad has launched or failed
+    closePremiumUpsellModal();
+    btn.classList.remove('is-loading');
+  });
+}
+
+function proceedOpenAddModal() {
   // Reset schedule state
   selectedFreq        = 'daily';
   selectedCustomDays  = [];
@@ -2159,6 +3175,13 @@ function fadeAndStopJournalAudio(playerEl, duration = 400) {
 /**
  * Stops all playing audio elements and resets their UI with a fade-out.
  */
+function formatAudioTime(seconds) {
+  if (isNaN(seconds)) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
 function stopAllJBookAudio(exceptId) {
   document.querySelectorAll('.jbook-audio-player').forEach(player => {
     const audio = player.querySelector('audio');
@@ -2185,9 +3208,13 @@ function toggleJBookAudioPlayer(playerEl) {
     playerEl.classList.add('audio-playing');
     if (icon) icon.textContent = 'pause';
 
+    const scrubber = playerEl.querySelector('.audio-scrubber');
+    const curTimeLabel = playerEl.querySelector('.audio-current-time');
+
     audio.ontimeupdate = () => {
       if (audio.duration && bar) {
         bar.style.width = `${(audio.currentTime / audio.duration) * 100}%`;
+        if (curTimeLabel) curTimeLabel.textContent = formatAudioTime(audio.currentTime);
       }
     };
     audio.onended = () => {
@@ -2251,10 +3278,13 @@ function renderMediaToBlock(item) {
     const infoDiv = document.createElement('div');
     infoDiv.className = 'audio-info';
     infoDiv.innerHTML = `
-      <div class="audio-progress-container">
+      <div class="audio-progress-container" title="Tap to seek">
         <div class="audio-progress-bar"></div>
       </div>
-      <div class="audio-time">Voice Note</div>`;
+      <div class="audio-time-row">
+        <span class="audio-current-time">0:00</span>
+        <span class="audio-duration">0:00</span>
+      </div>`;
 
     const audioEl = document.createElement('audio');
     audioEl.src = item.audio.data;  // Safe JS property — no HTML attribute
@@ -2263,6 +3293,31 @@ function renderMediaToBlock(item) {
     player.appendChild(playBtn);
     player.appendChild(infoDiv);
     player.appendChild(audioEl);
+
+    // Setup scrubber & time listeners
+    const container = player.querySelector('.audio-progress-container');
+    const curTimeLabel = player.querySelector('.audio-current-time');
+    const durLabel = player.querySelector('.audio-duration');
+    const bar = player.querySelector('.audio-progress-bar');
+
+    audioEl.onloadedmetadata = () => {
+      durLabel.textContent = formatAudioTime(audioEl.duration);
+    };
+
+    if (audioEl.readyState >= 1) {
+      durLabel.textContent = formatAudioTime(audioEl.duration);
+    }
+
+    container.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!audioEl.duration) return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const percent = Math.max(0, Math.min(1, x / rect.width));
+      audioEl.currentTime = percent * audioEl.duration;
+      if (bar) bar.style.width = `${percent * 100}%`;
+      curTimeLabel.textContent = formatAudioTime(audioEl.currentTime);
+    });
 
     // Wire the play button to the player-level toggle
     playBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleJBookAudioPlayer(player); });
@@ -2273,6 +3328,24 @@ function renderMediaToBlock(item) {
   return wrapper;
 }
 
+
+// Saves the new habit directly (called after gate check passes)
+function saveNewHabit(name, desc, icon, schedule) {
+  const newHabit = {
+    id: uid(),
+    name,
+    desc,
+    icon,
+    schedule,
+    createdAt: todayKey(),
+  };
+  habits.push(newHabit);
+  save();
+  closeAddModal();
+  renderHabits();
+  renderProfile();
+  showToast(`"${name}" added.`);
+}
 
 function addHabit() {
   const nameInput = document.getElementById('habit-name-input');
@@ -2295,21 +3368,31 @@ function addHabit() {
     if (selectedMonthly) schedule.monthly = selectedMonthly;
   }
 
-  const newHabit = {
-    id: uid(),
-    name,
-    desc,
-    icon: selectedIcon,
-    schedule,
-    createdAt: todayKey(),
-  };
+  // Premium users always save directly — no gates
+  if (window.MonetizationManager && window.MonetizationManager.isPremiumUser()) {
+    saveNewHabit(name, desc, selectedIcon, schedule);
+    return;
+  }
 
-  habits.push(newHabit);
-  save();
-  closeAddModal();
-  renderHabits();
-  renderProfile();
-  showToast(`"${name}" added.`);
+  // One-time intentions are always free — no gate applied
+  if (schedule.type === 'onetime') {
+    saveNewHabit(name, desc, selectedIcon, schedule);
+    return;
+  }
+
+  // Count only recurring (non-onetime) habits against the free limit
+  const recurringCount = habits.filter(h => !h.schedule || h.schedule.type !== 'onetime').length;
+
+  // Free users: allow up to 10 recurring intentions, then soft-paywall (ads allowed)
+  if (!window.MonetizationManager || window.MonetizationManager.canAddHabit(recurringCount)) {
+    saveNewHabit(name, desc, selectedIcon, schedule);
+    return;
+  }
+
+  // Over the limit — show upsell with "Watch Ad" option (soft paywall)
+  showPremiumUpsellModal('add_habit', () => {
+    saveNewHabit(name, desc, selectedIcon, schedule);
+  });
 }
 
 // ─── Edit Habit Modal ─────────────────────────
@@ -2516,6 +3599,7 @@ function saveEditHabit() {
   showToast('Habit updated.');
 }
 
+
 // ─── Journal ──────────────────────────────────
 function renderJournal() {
   // --- Performance Guard ---
@@ -2529,6 +3613,15 @@ function renderJournal() {
   const label    = document.getElementById('journal-date-label');
   const textarea = document.getElementById('journal-textarea');
   let bookWrapper = document.getElementById('journal-book-wrapper');
+  if (!bookWrapper) {
+    const section = document.getElementById('journal-book-section');
+    if (section) {
+      bookWrapper = document.createElement('div');
+      bookWrapper.className = 'journal-book-wrapper';
+      bookWrapper.id = 'journal-book-wrapper';
+      section.appendChild(bookWrapper);
+    }
+  }
   
   const d = parseDate(selectedDate);
   label.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
@@ -2536,7 +3629,8 @@ function renderJournal() {
   textarea.placeholder = `Begin writing...`;
 
   // Collect all journal dates that have content
-  const allSortedDates = Object.entries(journal)
+  const activeJournal = getActiveJournal();
+  const allSortedDates = Object.entries(activeJournal)
     .filter(([_, items]) => Array.isArray(items) && items.some(i => (i.text && i.text.trim()) || (i.images && i.images.length > 0) || i.audio))
     .map(([k]) => k)
     .sort((a, b) => a.localeCompare(b));
@@ -2564,19 +3658,12 @@ function renderJournal() {
   const pagesArray = [];
   
   
-  // Cover Page
+  // Cover Page — Dynamic from active book
+  const activeBook = journalBooks.find(b => b.id === activeBookId) || journalBooks[0];
   const coverPage = document.createElement('div');
   coverPage.className = 'jbook-page jbook-page-cover';
   coverPage.setAttribute('data-density', 'hard');
-  coverPage.innerHTML = `
-    <div class="jbook-page-content" style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; text-align:center; padding: 24px;">
-      <div style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:14px; color:#c9a84c; letter-spacing: 3px; margin-bottom:24px; opacity:0.7;">✦</div>
-      <h2 style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:22px; font-weight:500; color:#c9a84c; margin-bottom:6px; letter-spacing:1.5px; text-shadow: 0 1px 3px rgba(0,0,0,0.6);">Meditations</h2>
-      <p style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:15px; font-weight:300; color:#c9a84c; letter-spacing: 1px; opacity:0.85; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">&amp; Reflections</p>
-      <div style="width:50px; height:1px; background:linear-gradient(90deg, transparent, rgba(201,168,76,0.5), transparent); margin:20px auto;"></div>
-      <p style="font-family:'Cormorant Garamond', 'Newsreader', serif; font-size:11px; font-weight:400; color:rgba(201,168,76,0.5); letter-spacing: 2.5px; font-style:italic;">— est. ${new Date().getFullYear()} —</p>
-    </div>
-  `;
+  coverPage.innerHTML = renderCoverHTML(activeBook);
   pagesArray.push(coverPage);
 
   if (windowedDates.length === 0) {
@@ -2595,23 +3682,30 @@ function renderJournal() {
     dateHeader.textContent = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
     contentDiv.appendChild(dateHeader);
 
-    const block = document.createElement('div');
-    block.className = 'journal-entry-block system-entry';
-    block.style.padding = '10px 16px 10px 48px';
-    block.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-        <span style="font-family: var(--font-display); font-size: 11px; font-style: italic; color: #7a6852; opacity: 0.6;">— entry i</span>
-      </div>
-      <div class="journal-entry-body">${SYSTEM_INTRO_ENTRY.text}</div>
-    `;
-    const mediaEl = renderMediaToBlock(SYSTEM_INTRO_ENTRY);
-    if (mediaEl) block.appendChild(mediaEl);
-    contentDiv.appendChild(block);
-    
-    const endMark = document.createElement('div');
-    endMark.className = 'journal-end-mark';
-    endMark.innerHTML = '·&nbsp;&nbsp;·&nbsp;&nbsp;·';
-    contentDiv.appendChild(endMark);
+    if (activeBookId === DEFAULT_BOOK_ID) {
+      const block = document.createElement('div');
+      block.className = 'journal-entry-block system-entry';
+      block.style.padding = '10px 16px 10px 48px';
+      block.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+          <span style="font-family: var(--font-display); font-size: 11px; font-style: italic; color: #7a6852; opacity: 0.6;">— entry i</span>
+        </div>
+        <div class="journal-entry-body">${SYSTEM_INTRO_ENTRY.text}</div>
+      `;
+      const mediaEl = renderMediaToBlock(SYSTEM_INTRO_ENTRY);
+      if (mediaEl) block.appendChild(mediaEl);
+      contentDiv.appendChild(block);
+      
+      const endMark = document.createElement('div');
+      endMark.className = 'journal-end-mark';
+      endMark.innerHTML = '·&nbsp;&nbsp;·&nbsp;&nbsp;·';
+      contentDiv.appendChild(endMark);
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.style.cssText = 'padding: 40px 20px; text-align: center; opacity: 0.4; font-style: italic; font-size: 13px;';
+      placeholder.textContent = 'Your story begins here...';
+      contentDiv.appendChild(placeholder);
+    }
 
     introPage.appendChild(contentDiv);
     
@@ -2630,7 +3724,7 @@ function renderJournal() {
       pagesArray.push(blankBackside);
 
       const pageDate = parseDate(key);
-      const dayEntries = journal[key] || [];
+      const dayEntries = activeJournal[key] || [];
 
       const pageDiv = document.createElement('div');
       pageDiv.className = 'jbook-page';
@@ -2647,8 +3741,8 @@ function renderJournal() {
         .map((item, originalIndex) => ({ ...item, originalIndex }))
         .filter(i => (i.text && i.text.trim()) || (i.images && i.images.length > 0) || i.audio);
 
-      // Prepend system intro only on the first ever page of the book
-      if (allSortedDates.indexOf(key) === 0) {
+      // Prepend system intro only on the first ever page of the INITIAL book
+      if (activeBookId === DEFAULT_BOOK_ID && allSortedDates.indexOf(key) === 0) {
         sortedDayItems.unshift({ ...SYSTEM_INTRO_ENTRY, originalIndex: -1 });
       }
 
@@ -2798,7 +3892,22 @@ function renderJournal() {
 
     if (journalPageFlip && document.getElementById('screen-journal').classList.contains('active')) {
       try {
+        // Recalculate dimensions
+        let bookWidth = window.innerWidth - 48;
+        if (bookWidth > 340) bookWidth = 340;
+        let bookHeight = 420;
+
+        bookWrapper.style.minHeight = bookHeight + 'px';
+        bookWrapper.style.minWidth = (bookWidth * 2) + 'px';
+        bookWrapper.style.transform = `translateX(-${bookWidth / 2}px)`;
+
         journalPageFlip.updateFromHtml(pagesArray);
+        
+        // Force PageFlip to recalculate its internal layout
+        if (typeof journalPageFlip.update === 'function') {
+          journalPageFlip.update();
+        }
+
         // Sync with next frame for buttery transition
         requestAnimationFrame(flipToTarget);
         return; 
@@ -2809,14 +3918,18 @@ function renderJournal() {
       }
     }
 
+    // Double-rAF guarantees the browser has completed one full layout + paint
+    // cycle before we proceed. This replaces the fragile rAF + setTimeout(50ms)
+    // approach which could lose the race on slower devices.
     requestAnimationFrame(() => {
-      // Small 50ms delay to allow DOM to settle after screen transition
-      setTimeout(() => {
+      requestAnimationFrame(() => {
         if (!document.getElementById('screen-journal').classList.contains('active')) return;
 
-        let bookWidth = window.innerWidth - 48;
+        // Calculate dimensions
+        let bookWidth, bookHeight;
+        bookWidth = window.innerWidth - 48;
         if (bookWidth > 340) bookWidth = 340;
-        const bookHeight = 420;
+        bookHeight = 420;
 
         try {
           if (!journalPageFlip) {
@@ -2827,6 +3940,7 @@ function renderJournal() {
             parent.replaceChild(newWrapper, bookWrapper);
             bookWrapper = newWrapper;
             
+            // Set dimensions BEFORE creating PageFlip (prevents layout shift)
             bookWrapper.style.minHeight = bookHeight + 'px';
             bookWrapper.style.minWidth = (bookWidth * 2) + 'px';
             bookWrapper.style.transform = `translateX(-${bookWidth / 2}px)`;
@@ -2835,10 +3949,10 @@ function renderJournal() {
               width: bookWidth, 
               height: bookHeight,
               size: 'fixed',
-              minWidth: 200,
-              maxWidth: 600,
-              minHeight: 300,
-              maxHeight: 800,
+              minWidth: 50,
+              maxWidth: 1200,
+              minHeight: 100,
+              maxHeight: 2000,
               usePortrait: false, 
               maxShadowOpacity: 0.15,
               showCover: true,
@@ -2870,8 +3984,35 @@ function renderJournal() {
 
             journalPageFlip.loadFromHTML(pagesArray);
             
+            // Set up ResizeObserver to handle layout shifts robustly
+            if (!window.journalResizeObserver) {
+              window.journalResizeObserver = new ResizeObserver(() => {
+                if (currentScreen !== 'journal' || !journalPageFlip) return;
+                try {
+                  const bw = document.getElementById('journal-book-wrapper');
+                  if (bw) {
+                    let w;
+                    let sX = 0;
+                    w = window.innerWidth - 48;
+                    if (w > 340) w = 340;
+                    sX = -w / 2;
+                    bw.style.minWidth = (w * 2) + 'px';
+                    bw.style.transform = sX !== 0 ? `translateX(${sX}px)` : 'none';
+                    if (typeof journalPageFlip.update === 'function') {
+                      journalPageFlip.update();
+                    }
+                  }
+                } catch(e) {}
+              });
+              const section = document.getElementById('journal-book-section');
+              if (section) window.journalResizeObserver.observe(section);
+            }
+            
+            // Reveal only AFTER PageFlip has measured and painted
             requestAnimationFrame(() => {
-              bookWrapper.classList.add('ready');
+              requestAnimationFrame(() => {
+                bookWrapper.classList.add('ready');
+              });
             });
           }
           
@@ -2880,7 +4021,7 @@ function renderJournal() {
         } catch(err) {
           console.error("PageFlip init error:", err);
         }
-      }, 50);
+      });
     });
   }
 }
@@ -2896,9 +4037,10 @@ async function deleteJournalEntry(key, index, type = 'journal', habitId = null) 
 
   if (confirmed) {
     if (type === 'journal') {
-      if (journal[key] && journal[key][index]) {
-        journal[key].splice(index, 1);
-        if (journal[key].length === 0) delete journal[key];
+      const activeJournal = getActiveJournal();
+      if (activeJournal[key] && activeJournal[key][index]) {
+        activeJournal[key].splice(index, 1);
+        if (activeJournal[key].length === 0) delete activeJournal[key];
         save();
       }
     } else if (type === 'habit' && habitId) {
@@ -2940,9 +4082,10 @@ function saveJournal() {
   const media = currentAttachments.journal;
 
   if (text || (media && (media.images.length > 0 || media.audio))) {
-    if (!Array.isArray(journal[selectedDate])) journal[selectedDate] = [];
+    const activeJournal = getActiveJournal();
+    if (!Array.isArray(activeJournal[selectedDate])) activeJournal[selectedDate] = [];
     
-    journal[selectedDate].push({ 
+    activeJournal[selectedDate].push({ 
       text, 
       ts: Date.now(),
       images: media.images.length > 0 ? [...media.images] : undefined,
@@ -3059,7 +4202,7 @@ function saveHistoryModal() {
 
   const text = document.getElementById('history-edit-textarea').value.trim();
 
-  const source = habitId ? habitJournal[habitId] : journal;
+  const source = habitId ? habitJournal[habitId] : getActiveJournal();
   if (!source[key]) source[key] = [];
 
   if (index !== null) {
@@ -3082,7 +4225,50 @@ function saveHistoryModal() {
 }
 
 // ─── Profile / Stats ──────────────────────────
+window.updateProfilePremiumBanner = function() {
+  const banner = document.getElementById('profile-premium-banner');
+  const title = document.getElementById('profile-banner-title');
+  const desc = document.getElementById('profile-banner-desc');
+  
+  if (!banner) return;
+
+  const isPremium = window.MonetizationManager ? window.MonetizationManager.isPremiumUser() : false;
+
+  if (isPremium) {
+    banner.classList.add('is-premium');
+    title.textContent = 'Telos Premium Active';
+    desc.textContent = 'Thank you for supporting Telos.';
+  } else {
+    banner.classList.remove('is-premium');
+    title.textContent = 'Unlock Telos Premium';
+    desc.textContent = 'Unlimited intentions, ad-free experience, & secret journals.';
+  }
+};
+
+// Initialize Profile Premium Banner Click Handler
+window.handleProfileBannerClick = function() {
+  console.log('[Monetization] Profile Banner Clicked!');
+  const isPremium = window.MonetizationManager ? window.MonetizationManager.isPremiumUser() : false;
+  if (!isPremium && window.MonetizationManager) {
+    // Try to show the Adapty paywall first, which falls back to HTML modal
+    window.MonetizationManager.showUpsellModal('profile_banner');
+  } else if (!isPremium && typeof showPremiumUpsellModal === 'function') {
+    showPremiumUpsellModal('profile_banner');
+  } else if (isPremium && window.Capacitor && window.Capacitor.Plugins.Haptics) {
+    // Just a little bump if they click it while already premium
+    window.Capacitor.Plugins.Haptics.impact({ style: 'light' }).catch(()=>{});
+  }
+};
+
+// Listen for premium state changes (from purchases or restores)
+document.addEventListener('premiumStateChanged', () => {
+  if (window.updateProfilePremiumBanner) {
+    window.updateProfilePremiumBanner();
+  }
+});
 function renderProfile() {
+  if (window.updateProfilePremiumBanner) window.updateProfilePremiumBanner();
+  
   document.getElementById('stat-total').textContent = habits.length;
 
   const todayStr = todayKey();
@@ -3190,21 +4376,565 @@ function renderProfile() {
   }
 
   // Sync settings toggles
-  document.getElementById('toggle-theme').checked = notifSettings.theme === 'dark';
+  // Update current theme label
+  const currentTheme = THEMES[notifSettings.theme] || THEMES.midnight;
+  const themeLabel = document.getElementById('current-theme-label');
+  if (themeLabel) themeLabel.textContent = currentTheme.name;
   document.getElementById('toggle-haptics').checked = notifSettings.hapticsEnabled !== false;
+  document.getElementById('toggle-journal-hint').checked = notifSettings.showJournalHint !== false;
 }
 
 function applyTheme() {
-  const isDark = notifSettings.theme === 'dark';
-  document.documentElement.classList.toggle('dark', isDark);
+  // Migrate legacy 'dark'/'light' values to new theme IDs
+  notifSettings.theme = migrateLegacyTheme(notifSettings.theme);
   
-  // Update status bar color if possible (mobile)
-  const metaTheme = document.querySelector('meta[name="theme-color"]');
-  if (metaTheme) metaTheme.setAttribute('content', isDark ? '#121212' : '#F9F8F6');
-
+  const theme = applyThemeEngine(notifSettings.theme);
+  
+  // Update Capacitor status bar
   try {
-    StatusBar.setStyle({ style: isDark ? Style.Dark : Style.Light });
+    StatusBar.setStyle({ style: theme.statusBarStyle === 'Dark' ? Style.Dark : Style.Light });
   } catch(e) {}
+  
+  // Update current theme label in profile menu
+  const themeLabel = document.getElementById('current-theme-label');
+  if (themeLabel) themeLabel.textContent = theme.name;
+}
+
+function renderThemePicker() {
+  const groups = getThemesByCategory();
+  const darkGrid = document.getElementById('theme-grid-dark');
+  const lightGrid = document.getElementById('theme-grid-light');
+  if (!darkGrid || !lightGrid) return;
+  
+  const currentThemeId = notifSettings.theme;
+  
+  darkGrid.innerHTML = '';
+  lightGrid.innerHTML = '';
+  
+  groups.dark.forEach(theme => {
+    const card = createThemeCard(theme, theme.id === currentThemeId);
+    card.addEventListener('click', () => selectTheme(theme.id));
+    darkGrid.appendChild(card);
+  });
+  
+  groups.light.forEach(theme => {
+    const card = createThemeCard(theme, theme.id === currentThemeId);
+    card.addEventListener('click', () => selectTheme(theme.id));
+    lightGrid.appendChild(card);
+  });
+}
+
+function selectTheme(themeId) {
+  notifSettings.theme = themeId;
+  save();
+  applyTheme();
+  renderThemePicker(); // Re-render to update active state
+  try { Haptics.impact({ style: ImpactStyle.Light }); } catch(err) {}
+}
+
+// ─── Book Catalog / Switcher ───────────────
+function openBookCatalog() {
+  renderBookCatalog();
+  document.getElementById('book-catalog-overlay').classList.remove('hidden');
+}
+
+function closeBookCatalog() {
+  const overlay = document.getElementById('book-catalog-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+
+  // Add closing state to trigger CSS animations
+  overlay.classList.add('closing');
+
+  // Wait for the animation to finish (matching the 0.3s CSS duration)
+  setTimeout(() => {
+    overlay.classList.add('hidden');
+    overlay.classList.remove('closing');
+  }, 250); 
+}
+
+function renderBookCatalog() {
+  const grid = document.getElementById('book-catalog-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  
+  const visibleBooks = journalBooks.filter(b => !b.isHidden);
+  const hiddenBooks = journalBooks.filter(b => b.isHidden);
+  
+  // 1. Render Visible Books
+  visibleBooks.forEach(book => {
+    const count = countBookEntries(journal, book.id);
+    const card = createBookCard(book, book.id === activeBookId, count);
+    card.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchBook(book.id);
+    });
+    grid.appendChild(card);
+  });
+  
+  // 2. Render Secrets Card vs Hidden Journals
+  if (!isSecretsUnlocked) {
+    const secretsCard = document.createElement('div');
+    secretsCard.className = 'book-card secrets-card';
+    secretsCard.innerHTML = `
+      <div class="book-card-spine" style="background:var(--card-bg);">
+        <div class="book-card-cover">
+          <span class="material-symbols-outlined">lock</span>
+          <p class="book-card-title">Secrets</p>
+        </div>
+      </div>
+      <div class="book-card-info">
+        <p class="book-card-name">Secrets</p>
+        <p class="book-card-meta">${hiddenBooks.length} hidden</p>
+      </div>
+    `;
+    secretsCard.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPasscodeModal(getStoredPasscode() ? 'verify' : 'setup');
+    });
+    grid.appendChild(secretsCard);
+  } else {
+    const divider = document.createElement('div');
+    divider.className = 'hidden-journals-divider';
+    divider.style.display = 'flex';
+    divider.style.justifyContent = 'space-between';
+    divider.style.alignItems = 'center';
+
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = 'Hidden Journals';
+
+    const lockBtn = document.createElement('button');
+    lockBtn.className = 'btn-lock-secrets';
+    lockBtn.style.cssText = 'background: var(--pure-white, #fff); border: 1px solid var(--greige, #e5e3df); color: var(--charcoal, #2a2a2a); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px 12px; border-radius: 16px; box-shadow: var(--shadow-subtle); transition: transform 0.1s; outline: none;';
+    
+    // Add touch feedback
+    lockBtn.addEventListener('mousedown', () => lockBtn.style.transform = 'scale(0.95)');
+    lockBtn.addEventListener('mouseup', () => lockBtn.style.transform = 'scale(1)');
+    lockBtn.addEventListener('mouseleave', () => lockBtn.style.transform = 'scale(1)');
+    lockBtn.addEventListener('touchstart', () => lockBtn.style.transform = 'scale(0.95)');
+    lockBtn.addEventListener('touchend', () => lockBtn.style.transform = 'scale(1)');
+    
+    const lockIcon = document.createElement('div');
+    lockIcon.style.display = 'flex';
+    lockIcon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
+    
+    const lockText = document.createElement('span');
+    lockText.textContent = 'Lock Secrets';
+    
+    lockBtn.appendChild(lockIcon);
+    lockBtn.appendChild(lockText);
+    
+    lockBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      isSecretsUnlocked = false;
+      
+      // If the active book is hidden, switch to the first visible book
+      const activeBookObj = journalBooks.find(b => b.id === activeBookId);
+      if (activeBookObj && activeBookObj.isHidden) {
+        const firstVisible = journalBooks.find(b => !b.isHidden);
+        if (firstVisible) {
+          activeBookId = firstVisible.id;
+          save();
+          applyBookColors();
+          isJournalFlipping = false;
+          pendingJournalRender = false;
+          const bw = document.getElementById('journal-book-wrapper');
+          if (bw) bw.classList.remove('jbook-flipping');
+          renderJournal();
+        }
+      }
+      
+      renderBookCatalog();
+      showToast('Secrets locked.');
+      try { Haptics.impact({ style: ImpactStyle.Light }); } catch(err) {}
+    });
+
+    divider.appendChild(titleSpan);
+    divider.appendChild(lockBtn);
+    grid.appendChild(divider);
+    
+    if (hiddenBooks.length > 0) {
+      hiddenBooks.forEach(book => {
+        const count = countBookEntries(journal, book.id);
+        const card = createBookCard(book, book.id === activeBookId, count);
+        card.addEventListener('click', (e) => {
+          e.stopPropagation();
+          switchBook(book.id);
+        });
+        grid.appendChild(card);
+      });
+    } else {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.className = 'empty-secrets-message';
+      emptyMsg.innerHTML = 'Your secrets are safe here.<br>Move a journal to Secrets to keep it private.';
+      grid.appendChild(emptyMsg);
+    }
+  }
+}
+
+// ─── Passcode Modal Logic ───────────────
+function getStoredPasscode() {
+  return localStorage.getItem('telos_passcode'); // null if never set
+}
+
+function openPasscodeModal(mode = 'verify') {
+  passcodeMode = mode;
+  passcodeEntry = '';
+  passcodeTempCode = (mode === 'confirm') ? passcodeTempCode : '';
+  updatePasscodeDots();
+
+  const titleEl = document.querySelector('.passcode-title');
+  const subtitleEl = document.querySelector('.passcode-subtitle');
+
+  switch (mode) {
+    case 'setup':
+      titleEl.textContent = 'Create Your Passcode';
+      subtitleEl.textContent = 'Choose a 4-digit code';
+      break;
+    case 'confirm':
+      titleEl.textContent = 'Confirm Your Passcode';
+      subtitleEl.textContent = 'Re-enter to verify';
+      break;
+    case 'change_verify':
+      titleEl.textContent = 'Enter Current Passcode';
+      subtitleEl.textContent = 'Verify to change';
+      break;
+    default: // 'verify'
+      titleEl.textContent = 'Enter Passcode';
+      subtitleEl.textContent = 'Unlock your secrets';
+  }
+
+  document.getElementById('passcode-overlay').classList.remove('hidden');
+}
+
+function closePasscodeModal() {
+  document.getElementById('passcode-overlay').classList.add('hidden');
+  passcodeEntry = '';
+  passcodeMode = 'verify';
+  passcodeTempCode = '';
+}
+
+function updatePasscodeDots() {
+  const dots = document.querySelectorAll('.passcode-dot');
+  dots.forEach((dot, index) => {
+    dot.classList.remove('error');
+    if (index < passcodeEntry.length) dot.classList.add('filled');
+    else dot.classList.remove('filled');
+  });
+}
+
+function handlePasscodeError() {
+  try { Haptics.impact({ style: ImpactStyle.Heavy }); } catch(e) {}
+  const dots = document.querySelectorAll('.passcode-dot');
+  dots.forEach(dot => {
+    if (dot.classList.contains('filled')) dot.classList.add('error');
+  });
+  const keypad = document.querySelector('.passcode-modal');
+  if (keypad) {
+    keypad.classList.add('shake');
+    setTimeout(() => {
+      keypad.classList.remove('shake');
+      passcodeEntry = '';
+      updatePasscodeDots();
+    }, 400);
+  }
+}
+
+function handlePasscodeComplete() {
+  switch (passcodeMode) {
+    case 'setup':
+      // Store temporarily and ask to confirm
+      passcodeTempCode = passcodeEntry;
+      passcodeEntry = '';
+      updatePasscodeDots();
+      // Brief delay so the user sees all dots filled
+      setTimeout(() => openPasscodeModal('confirm'), 200);
+      break;
+
+    case 'confirm':
+      if (passcodeEntry === passcodeTempCode) {
+        // Match — save and unlock
+        localStorage.setItem('telos_passcode', passcodeEntry);
+        try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(e) {}
+        showToast('Passcode set successfully ✓');
+        isSecretsUnlocked = true;
+        closePasscodeModal();
+        renderBookCatalog();
+      } else {
+        // Mismatch — restart setup
+        handlePasscodeError();
+        setTimeout(() => {
+          showToast('Codes didn\'t match — try again');
+          openPasscodeModal('setup');
+        }, 500);
+      }
+      break;
+
+    case 'change_verify':
+      if (passcodeEntry === getStoredPasscode()) {
+        // Current passcode correct — proceed to setup new one
+        try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(e) {}
+        passcodeEntry = '';
+        updatePasscodeDots();
+        setTimeout(() => openPasscodeModal('setup'), 200);
+      } else {
+        handlePasscodeError();
+      }
+      break;
+
+    default: // 'verify'
+      if (passcodeEntry === getStoredPasscode()) {
+        isSecretsUnlocked = true;
+        try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(e) {}
+        closePasscodeModal();
+        renderBookCatalog();
+      } else {
+        handlePasscodeError();
+      }
+  }
+}
+
+document.querySelectorAll('.keypad-btn').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    if (e.currentTarget.classList.contains('keypad-action')) return;
+    try { Haptics.impact({ style: ImpactStyle.Light }); } catch(e) {}
+    
+    const val = e.currentTarget.dataset.val;
+    if (val !== undefined && passcodeEntry.length < 4) {
+      passcodeEntry += val;
+      updatePasscodeDots();
+      
+      if (passcodeEntry.length === 4) {
+        handlePasscodeComplete();
+      }
+    }
+  });
+});
+
+document.getElementById('btn-passcode-delete')?.addEventListener('click', () => {
+  if (passcodeEntry.length > 0) {
+    try { Haptics.impact({ style: ImpactStyle.Light }); } catch(e) {}
+    passcodeEntry = passcodeEntry.slice(0, -1);
+    updatePasscodeDots();
+  }
+});
+
+document.getElementById('btn-passcode-cancel')?.addEventListener('click', () => {
+  closePasscodeModal();
+});
+
+function switchBook(bookId) {
+  if (bookId === activeBookId) return;
+  activeBookId = bookId;
+  save();
+  applyBookColors();
+  // Close catalog FIRST so UI is responsive, then render async
+  closeBookCatalog();
+  requestAnimationFrame(() => {
+    // Force-reset flip state so the render always goes through with fresh content
+    isJournalFlipping = false;
+    pendingJournalRender = false;
+    const bw = document.getElementById('journal-book-wrapper');
+    if (bw) bw.classList.remove('jbook-flipping');
+    renderJournal();
+  });
+  try { Haptics.impact({ style: ImpactStyle.Medium }); } catch(e) {}
+  const book = journalBooks.find(b => b.id === bookId);
+  if (book) showToast(`Switched to "${book.name}"`);
+}
+
+let editingBookId = null;
+let contextMenuBookId = null;
+
+function closeBookContextMenu() {
+  document.getElementById('book-context-menu-overlay').classList.add('hidden');
+  contextMenuBookId = null;
+}
+
+function deleteBookPrompt(bookId, bookName) {
+  if (journalBooks.length <= 1) {
+    showToast("Cannot delete your only journal.");
+    return;
+  }
+  
+  const bookToDelete = journalBooks.find(b => b.id === bookId);
+  const visibleBooks = journalBooks.filter(b => !b.isHidden);
+  
+  if (bookToDelete && !bookToDelete.isHidden && visibleBooks.length <= 1) {
+    showToast("Cannot delete your only public journal.");
+    return;
+  }
+  document.getElementById('confirm-title').textContent = 'Delete Journal';
+  document.getElementById('confirm-message').textContent = `Are you sure you want to delete "${bookName}" and all its pages? This cannot be undone.`;
+  document.getElementById('confirm-cancel').onclick = () => {
+    document.getElementById('confirm-dialog').parentElement.classList.add('hidden');
+  };
+  document.getElementById('confirm-action').onclick = () => {
+    document.getElementById('confirm-dialog').parentElement.classList.add('hidden');
+    
+    // Add visual deletion animation
+    const card = document.querySelector(`.book-card[data-book-id="${bookId}"]`);
+    if (card) {
+      card.classList.add('ashes-delete');
+      
+      setTimeout(() => {
+        executeDeleteBook(bookId);
+      }, 700);
+    } else {
+      executeDeleteBook(bookId);
+    }
+  };
+  document.getElementById('confirm-dialog').parentElement.classList.remove('hidden');
+}
+
+function executeDeleteBook(bookId) {
+  // 1. Remove entries
+  if (journal[bookId]) {
+    delete journal[bookId];
+  }
+  // 2. Remove book
+  journalBooks = journalBooks.filter(b => b.id !== bookId);
+  // 3. Fallback activeBookId
+  if (activeBookId === bookId) {
+      const firstVisible = journalBooks.find(b => !b.isHidden);
+      activeBookId = firstVisible ? firstVisible.id : journalBooks[0].id;
+  }
+  save();
+  applyBookColors();
+  
+  // Re-render components
+  const bw = document.getElementById('journal-book-wrapper');
+  if (bw) bw.classList.remove('jbook-flipping');
+  renderJournal();
+  
+  // If catalog is open, re-render it
+  if (!document.getElementById('book-catalog-overlay').classList.contains('hidden')) {
+      renderBookCatalog();
+  }
+  
+  showToast('Journal deleted.');
+  triggerHaptic();
+}
+
+function openCreateBookModal(editBookId = null) {
+  if (!editBookId && window.MonetizationManager) {
+    if (!window.MonetizationManager.canCreateNewJournal(journalBooks.length)) {
+      window.MonetizationManager.showUpsellModal('library_full');
+      return;
+    }
+  }
+  
+  editingBookId = editBookId;
+  const overlay = document.getElementById('new-book-overlay');
+  const title = overlay.querySelector('.new-book-title');
+  const btn = document.getElementById('btn-confirm-new-book');
+  const nameInput = document.getElementById('new-book-name');
+  
+  if (editBookId) {
+    const book = journalBooks.find(b => b.id === editBookId);
+    title.textContent = 'Edit Journal';
+    btn.textContent = 'Save Changes';
+    nameInput.value = book.name;
+    selectedNewCover = book.cover || 'classic';
+  } else {
+    title.textContent = 'Create Journal';
+    btn.textContent = 'Create';
+    nameInput.value = '';
+    selectedNewCover = 'classic';
+  }
+  
+  overlay.classList.remove('hidden');
+  renderCoverPicker();
+  setTimeout(() => nameInput.focus(), 100);
+}
+
+function closeCreateBookModal() {
+  document.getElementById('new-book-overlay').classList.add('hidden');
+  editingBookId = null;
+}
+
+let selectedNewCover = 'classic';
+
+function renderCoverPicker() {
+  const container = document.getElementById('cover-picker-grid');
+  if (!container) return;
+  container.innerHTML = '';
+  
+  Object.keys(BOOK_COVERS).forEach(coverId => {
+    const opt = createCoverOption(coverId, coverId === selectedNewCover);
+    opt.addEventListener('click', () => {
+      selectedNewCover = coverId;
+      renderCoverPicker();
+      triggerHaptic();
+    });
+    container.appendChild(opt);
+  });
+}
+
+function confirmCreateBook() {
+  const name = document.getElementById('new-book-name').value.trim();
+  if (!name) {
+    showToast('Please enter a name for your journal.');
+    return;
+  }
+  
+  if (editingBookId) {
+    const book = journalBooks.find(b => b.id === editingBookId);
+    if (book) {
+      book.name = name;
+      book.cover = selectedNewCover;
+      book.updatedAt = Date.now();
+      showToast(`"${name}" updated.`);
+    }
+  } else {
+    const newBook = createBook(name, selectedNewCover);
+    journalBooks.push(newBook);
+    activeBookId = newBook.id;
+    showToast(`"${name}" created.`);
+  }
+  
+  save();
+  applyBookColors();
+  closeCreateBookModal();
+  
+  // Force-reset flip state and re-render
+  isJournalFlipping = false;
+  pendingJournalRender = false;
+  const bw = document.getElementById('journal-book-wrapper');
+  if (bw) bw.classList.remove('jbook-flipping');
+  renderJournal();
+  
+  // Re-render catalog if it's open
+  if (!document.getElementById('book-catalog-overlay').classList.contains('hidden')) {
+     renderBookCatalog();
+  }
+  
+  triggerHaptic();
+}
+
+async function exportActiveBookPDF() {
+  const book = journalBooks.find(b => b.id === activeBookId);
+  if (!book) return;
+  
+  const bookJournal = getActiveJournal();
+  const entryCount = countBookEntries(journal, activeBookId);
+  
+  if (entryCount === 0) {
+    showToast('This journal has no entries to export.');
+    return;
+  }
+  
+  showToast('Generating PDF...', 2000);
+  
+  try {
+    const blob = await exportBookToPDF(book, bookJournal);
+    const safeName = book.name.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_');
+    const filename = `Telos_${safeName}_${new Date().toISOString().slice(0,10)}.pdf`;
+    await sharePDF(blob, filename);
+    triggerHaptic();
+  } catch (e) {
+    console.error('PDF export error:', e);
+    showToast('Export failed. Please try again.');
+  }
 }
 
 async function deleteHabit(id, name) {
@@ -3278,7 +5008,7 @@ function confirmClear() {
 
     // Local Data
     if (target === 'local' || target === 'both') {
-      habits = []; logs = {}; journal = {}; habitJournal = {};
+      habits = []; logs = {}; journal = {}; habitJournal = {}; journalBooks = [createDefaultBook()]; activeBookId = DEFAULT_BOOK_ID;
       save();
       clearedMessages.push('Local data');
     }
@@ -3318,6 +5048,8 @@ function confirmClear() {
 
 // ─── Navigation (with transitions) ───────────
 function switchScreen(name, linkEl) {
+
+
   // Clear any keyboard states immediately when switching screens
   document.body.classList.remove('keyboard-visible');
   window.scrollTo(0, 0);
@@ -3326,6 +5058,29 @@ function switchScreen(name, linkEl) {
 
   currentScreen = name;
   activeHabitId = null;
+
+  // Handle banner ad visibility based on screen
+  if (window.MonetizationManager) {
+    if (name === 'journal' || name === 'profile' || name === 'today') {
+      window.MonetizationManager.showBanner();
+    } else {
+      window.MonetizationManager.hideBanner();
+    }
+  }
+
+  // Handle Journal long-press hint bubble
+  const journalBubble = document.getElementById('journal-hint-bubble');
+  if (journalBubble) {
+    if (name === 'journal') {
+      showJournalHint();
+    } else {
+      journalBubble.classList.remove('visible');
+      if (journalHintTimer) {
+        clearTimeout(journalHintTimer);
+        journalHintTimer = null;
+      }
+    }
+  }
 
   document.querySelectorAll('.screen').forEach(s => {
     s.classList.remove('active');
@@ -3354,11 +5109,24 @@ function switchScreen(name, linkEl) {
   // Restore bottom nav
   document.getElementById('bottom-nav').classList.remove('nav-hidden');
 
-  // Refresh screen content (synchronized with 0.2s CSS transition)
-  setTimeout(() => {
-    if (name === 'journal') renderJournal();
-    if (name === 'profile') renderProfile();
-  }, 180); // Slightly before 200ms animation ends so it's ready when screen shows up
+  // Refresh screen content — use a single reliable delay that exceeds the
+  // 200ms screen-enter animation AND any async banner ad layout shift.
+  // This replaces the old animationend + 300ms safety timeout approach that
+  // was prone to race conditions causing the flipbook to render off-screen.
+  if (name === 'journal') {
+    setTimeout(() => {
+      if (currentScreen !== 'journal') return; // User switched away already
+      renderJournal();
+      
+      // Run journal tutorial if first time
+      setTimeout(() => runTutorial('journal'), 800);
+    }, 350);
+  } else if (name === 'profile') {
+    setTimeout(() => {
+      if (currentScreen !== 'profile') return;
+      renderProfile();
+    }, 250);
+  }
 }
 
 // ─── Habit Detail Screen ──────────────────────
@@ -3713,130 +5481,52 @@ function releaseFocus(element) {
 
 // \u2500\u2500\u2500 Notifications \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function renderNotifications() {
-  const masterToggle = document.getElementById('notif-master-toggle');
-  if (!masterToggle) return;
-  masterToggle.checked = notifSettings.enabled;
-  const body = document.getElementById('notif-body');
-  body.classList.toggle('notif-disabled', !notifSettings.enabled);
+  // Morning Briefing
+  document.getElementById('notif-morning-toggle').checked = notifSettings.morning.enabled;
+  document.getElementById('morning-time-panel').classList.toggle('hidden', !notifSettings.morning.enabled);
+  document.getElementById('morning-time-input').value = notifSettings.morning.time;
 
-  // Default times
-  document.getElementById('default-time-morning').value   = notifSettings.defaultTimes.morning;
-  document.getElementById('default-time-afternoon').value = notifSettings.defaultTimes.afternoon;
-  document.getElementById('default-time-evening').value   = notifSettings.defaultTimes.evening;
+  // Evening Review
+  document.getElementById('notif-evening-toggle').checked = notifSettings.evening.enabled;
+  document.getElementById('evening-time-panel').classList.toggle('hidden', !notifSettings.evening.enabled);
+  document.getElementById('evening-time-input').value = notifSettings.evening.time;
 
-  // Habit-level list
-  const list = document.getElementById('notif-habit-list');
-  list.innerHTML = '';
-  habits.forEach(habit => {
-    const config = notifSettings.habitReminders[habit.id] || { enabled: false, time: '08:00' };
-    const li = document.createElement('li');
-    li.className = 'notif-habit-row';
-    li.dataset.id = habit.id;
-    li.innerHTML = `
-      <span class="material-symbols-outlined notif-habit-icon">${escapeHtml(habit.icon)}</span>
-      <span class="notif-habit-name">${escapeHtml(habit.name)}</span>
-      <input type="time" class="notif-time-input notif-habit-time" value="${config.time}"
-        style="display:${config.enabled ? 'block' : 'none'};"
-        aria-label="Reminder time for ${escapeHtml(habit.name)}" />
-      <label class="toggle-switch toggle-sm" aria-label="Reminder for ${escapeHtml(habit.name)}">
-        <input type="checkbox" class="notif-habit-toggle" ${config.enabled ? 'checked' : ''} />
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-    `;
-    list.appendChild(li);
-  });
-  if (habits.length === 0) {
-    list.innerHTML = '<li style="padding:12px 0;color:var(--slate);font-size:14px;opacity:0.6;">No habits yet.</li>';
-  }
-
-  // Smart
-  document.getElementById('notif-smart-toggle').checked = notifSettings.smart.enabled;
-  document.getElementById('smart-times-panel').classList.toggle('hidden', !notifSettings.smart.enabled);
-  document.getElementById('smart-time-1').value = notifSettings.smart.times[0] || '18:00';
-  document.getElementById('smart-time-2').value = notifSettings.smart.times[1] || '21:00';
-
-  // Streak
-  document.getElementById('notif-streak-toggle').checked = notifSettings.streak.enabled;
-  document.getElementById('streak-time-panel').classList.toggle('hidden', !notifSettings.streak.enabled);
-  document.getElementById('streak-time').value = notifSettings.streak.time;
-
-  // Snooze
-  document.getElementById('notif-snooze-toggle').checked = notifSettings.snooze.enabled;
-  document.getElementById('snooze-panel').classList.toggle('hidden', !notifSettings.snooze.enabled);
-  document.querySelectorAll('.snooze-chip input[type="checkbox"]').forEach(cb => {
-    cb.checked = notifSettings.snooze.options.includes(parseInt(cb.value, 10));
-  });
+  // Streak Saver
+  document.getElementById('notif-streak-toggle').checked = notifSettings.streak;
 }
 
 function bindNotifUI() {
-  if (!document.getElementById('notif-master-toggle')) return;
-
-  // Master toggle — request permission first when enabling
-  document.getElementById('notif-master-toggle').addEventListener('change', async (e) => {
-    notifSettings.enabled = e.target.checked;
-    document.getElementById('notif-body').classList.toggle('notif-disabled', !notifSettings.enabled);
+  // Morning
+  document.getElementById('notif-morning-toggle').addEventListener('change', async (e) => {
+    notifSettings.morning.enabled = e.target.checked;
+    document.getElementById('morning-time-panel').classList.toggle('hidden', !e.target.checked);
     saveNotif();
-    await scheduleNotifications();   // cancel-all or full reschedule
+    await scheduleNotifications();
   });
-
-  // Default times
-  ['morning', 'afternoon', 'evening'].forEach(period => {
-    document.getElementById(`default-time-${period}`).addEventListener('change', async (e) => {
-      notifSettings.defaultTimes[period] = e.target.value;
-      saveNotif();
-      await scheduleNotifications();
-    });
-  });
-
-  // Habit rows (delegated)
-  document.getElementById('notif-habit-list').addEventListener('change', async (e) => {
-    const row = e.target.closest('.notif-habit-row');
-    if (!row) return;
-    const id = row.dataset.id;
-    if (!notifSettings.habitReminders[id]) notifSettings.habitReminders[id] = { enabled: false, time: '08:00' };
-    if (e.target.classList.contains('notif-habit-toggle')) {
-      notifSettings.habitReminders[id].enabled = e.target.checked;
-      row.querySelector('.notif-habit-time').style.display = e.target.checked ? 'block' : 'none';
-    }
-    if (e.target.classList.contains('notif-habit-time')) {
-      notifSettings.habitReminders[id].time = e.target.value;
-    }
+  document.getElementById('morning-time-input').addEventListener('change', async (e) => {
+    notifSettings.morning.time = e.target.value;
     saveNotif();
     await scheduleNotifications();
   });
 
-  // Smart
-  document.getElementById('notif-smart-toggle').addEventListener('change', async (e) => {
-    notifSettings.smart.enabled = e.target.checked;
-    document.getElementById('smart-times-panel').classList.toggle('hidden', !e.target.checked);
+  // Evening
+  document.getElementById('notif-evening-toggle').addEventListener('change', async (e) => {
+    notifSettings.evening.enabled = e.target.checked;
+    document.getElementById('evening-time-panel').classList.toggle('hidden', !e.target.checked);
     saveNotif();
     await scheduleNotifications();
   });
-  document.getElementById('smart-time-1').addEventListener('change', async (e) => { notifSettings.smart.times[0] = e.target.value; saveNotif(); await scheduleNotifications(); });
-  document.getElementById('smart-time-2').addEventListener('change', async (e) => { notifSettings.smart.times[1] = e.target.value; saveNotif(); await scheduleNotifications(); });
+  document.getElementById('evening-time-input').addEventListener('change', async (e) => {
+    notifSettings.evening.time = e.target.value;
+    saveNotif();
+    await scheduleNotifications();
+  });
 
-  // Streak
+  // Streak Saver
   document.getElementById('notif-streak-toggle').addEventListener('change', async (e) => {
-    notifSettings.streak.enabled = e.target.checked;
-    document.getElementById('streak-time-panel').classList.toggle('hidden', !e.target.checked);
+    notifSettings.streak = e.target.checked;
     saveNotif();
     await scheduleNotifications();
-  });
-  document.getElementById('streak-time').addEventListener('change', async (e) => { notifSettings.streak.time = e.target.value; saveNotif(); await scheduleNotifications(); });
-
-  // Snooze (UI only — local-notifications doesn't support native snooze, but we store the preference)
-  document.getElementById('notif-snooze-toggle').addEventListener('change', (e) => {
-    notifSettings.snooze.enabled = e.target.checked;
-    document.getElementById('snooze-panel').classList.toggle('hidden', !e.target.checked);
-    saveNotif();
-  });
-  document.querySelectorAll('.snooze-chip input[type="checkbox"]').forEach(cb => {
-    cb.addEventListener('change', () => {
-      notifSettings.snooze.options = Array.from(
-        document.querySelectorAll('.snooze-chip input[type="checkbox"]:checked')
-      ).map(c => parseInt(c.value, 10));
-      saveNotif();
-    });
   });
 }
 
@@ -3891,19 +5581,21 @@ async function scheduleNotifications(silent = false) {
   // Always start clean
   await cancelAllNotifications();
 
-  if (!notifSettings.enabled) return; // Nothing to do
-
-  // Ensure we have OS permission
-  const granted = await requestNotifPermission();
-  if (!granted) {
-    showToast('⚠ Notification permission denied.');
-    notifSettings.enabled = false;
-    const masterToggle = document.getElementById('notif-master-toggle');
-    if (masterToggle) masterToggle.checked = false;
-    const body = document.getElementById('notif-body');
-    if (body) body.classList.add('notif-disabled');
-    saveNotif();
-    return;
+  // Ensure we have OS permission.
+  // If called silently (startup re-schedule), only check — do NOT prompt the OS dialog.
+  // The OS dialog is only shown via requestNotifPermission() from finishTutorial() or user settings.
+  const { display } = await LocalNotifications.checkPermissions().catch(() => ({ display: 'denied' }));
+  if (silent) {
+    // Silent mode: skip scheduling if not already granted — never show OS dialog here
+    if (display !== 'granted') return;
+  } else {
+    // Interactive mode: ask for permission if needed
+    const granted = await requestNotifPermission();
+    if (!granted) {
+      showToast('⚠ Notification permission denied.');
+      saveNotif();
+      return;
+    }
   }
 
   const toSchedule = [];
@@ -3918,74 +5610,51 @@ async function scheduleNotifications(silent = false) {
     return d;
   }
 
-  // ── 1. Per-habit reminders (next 7 days) ─────────────────────────────────
-  // FIX: Master toggle alone now schedules ALL habits at defaultTimes.morning.
-  // The per-habit toggle only sets a CUSTOM override time for that specific habit.
-  // This makes the master toggle immediately useful without per-habit config.
-  habits.forEach((habit, hIdx) => {
-    const cfg = notifSettings.habitReminders[habit.id];
-    // Use custom per-habit time if configured; otherwise fall back to default morning.
-    const timeStr = (cfg && cfg.enabled && cfg.time)
-      ? cfg.time
-      : notifSettings.defaultTimes.morning;
 
+
+
+  // ── 1. Morning Briefing (next 7 days) ────────────────────────
+  if (notifSettings.morning.enabled && notifSettings.morning.time) {
     for (let day = 0; day <= 6; day++) {
-      const fireDate = dateAtTime(day, timeStr);
-      if (fireDate <= now) continue; // skip times already passed today
-
-      // Respect the habit's own schedule (daily/weekdays/weekends/custom/one-time)
-      const checkDate = new Date(now);
-      checkDate.setDate(checkDate.getDate() + day);
-      const checkKey = dateKey(checkDate);
-      if (!shouldShowHabit(habit, checkKey)) continue;
-
-      const notifId = 1000 + hIdx * 7 + day; // unique per habit × day slot
-      toSchedule.push({
-        id: notifId,
-        title: `⏰ ${habit.name}`,
-        body: habit.desc ? habit.desc : "Don't forget your intention today.",
-        // FIX: exact:true — forces Android to fire at precise time instead of
-        // batching via Doze. allowWhileIdle ensures delivery with screen off.
-        schedule: { at: fireDate, allowWhileIdle: true, exact: true },
-        // FIX: removed smallIcon:'ic_stat_icon_config_sample' — that drawable
-        // doesn't exist in this app and caused Android to silently drop the notif.
-        channelId: 'telos_reminders',
-        extra: { habitId: habit.id },
-      });
-    }
-  });
-
-  // ── 2. Smart check-in notifications (next 7 days) ────────────────────────
-  if (notifSettings.smart.enabled) {
-    notifSettings.smart.times.forEach((timeStr, ti) => {
-      for (let day = 0; day <= 6; day++) {
-        const fireDate = dateAtTime(day, timeStr);
-        if (fireDate <= now) continue;
-
-        const notifId = 2000 + ti * 7 + day;
-        toSchedule.push({
-          id: notifId,
-          title: '🌙 Telos Check-in',
-          body: 'How are your intentions going today?',
-          schedule: { at: fireDate, allowWhileIdle: true, exact: true },
-          channelId: 'telos_reminders',
-        });
-      }
-    });
-  }
-
-  // ── 3. Streak protection reminder (next 7 days) ──────────────────────────
-  if (notifSettings.streak.enabled) {
-    const timeStr = notifSettings.streak.time || '20:00';
-    for (let day = 0; day <= 6; day++) {
-      const fireDate = dateAtTime(day, timeStr);
+      const fireDate = dateAtTime(day, notifSettings.morning.time);
       if (fireDate <= now) continue;
 
-      const notifId = 3000 + day;
       toSchedule.push({
-        id: notifId,
-        title: '🔥 Protect Your Streak!',
-        body: "You still have habits to complete today. Keep your streak alive!",
+        id: 1000 + day,
+        title: '🌅 Good Morning',
+        body: 'Set your intentions for today. Tap to view your habits.',
+        schedule: { at: fireDate, allowWhileIdle: true, exact: true },
+        channelId: 'telos_reminders',
+      });
+    }
+  }
+
+  // ── 2. Evening Review (next 7 days) ──────────────────────────
+  if (notifSettings.evening.enabled && notifSettings.evening.time) {
+    for (let day = 0; day <= 6; day++) {
+      const fireDate = dateAtTime(day, notifSettings.evening.time);
+      if (fireDate <= now) continue;
+
+      toSchedule.push({
+        id: 2000 + day,
+        title: '🌙 Evening Review',
+        body: 'Ready to wrap up? Let\'s see how you did today.',
+        schedule: { at: fireDate, allowWhileIdle: true, exact: true },
+        channelId: 'telos_reminders',
+      });
+    }
+  }
+
+  // ── 3. Streak Saver (next 7 days) ────────────────────────────
+  if (notifSettings.streak) {
+    for (let day = 0; day <= 6; day++) {
+      const fireDate = dateAtTime(day, '21:00');
+      if (fireDate <= now) continue;
+
+      toSchedule.push({
+        id: 3000 + day,
+        title: '🔥 Protect Your Streaks!',
+        body: 'You still have active habits today. Don\'t lose your momentum!',
         schedule: { at: fireDate, allowWhileIdle: true, exact: true },
         channelId: 'telos_reminders',
       });
@@ -4099,23 +5768,26 @@ function renderJournalArchive() {
   let allEntries = [];
   
   if (archiveTab === 'general') {
-    const allJournalDates = Object.keys(journal).sort((a,b) => a.localeCompare(b));
+    const activeJournal = getActiveJournal();
+    const allJournalDates = Object.keys(activeJournal).sort((a,b) => a.localeCompare(b));
     const firstDate = allJournalDates[0] || todayKey();
     
-    // Inject standard intro
-    allEntries.push({ 
-      dateKey: firstDate, 
-      type: 'general', 
-      text: SYSTEM_INTRO_ENTRY.text, 
-      ts: 1, // Absolute beginning
-      images: SYSTEM_INTRO_ENTRY.images, 
-      audio: SYSTEM_INTRO_ENTRY.audio, 
-      originalIndex: -1,
-      isSystem: true
-    });
+    // Inject standard intro only for default book
+    if (activeBookId === DEFAULT_BOOK_ID) {
+      allEntries.push({ 
+        dateKey: firstDate, 
+        type: 'general', 
+        text: SYSTEM_INTRO_ENTRY.text, 
+        ts: 1, // Absolute beginning
+        images: SYSTEM_INTRO_ENTRY.images, 
+        audio: SYSTEM_INTRO_ENTRY.audio, 
+        originalIndex: -1,
+        isSystem: true
+      });
+    }
 
-    Object.keys(journal).forEach(dk => {
-      const items = journal[dk];
+    Object.keys(activeJournal).forEach(dk => {
+      const items = activeJournal[dk];
       if (Array.isArray(items)) {
         items.forEach((item, index) => {
           if ((item.text && item.text.trim()) || (item.images && item.images.length > 0) || item.audio) {
@@ -4300,20 +5972,89 @@ const tutorialSteps = [
   }
 ];
 
-function runTutorial() {
-  if (localStorage.getItem('telos_tutorial')) return;
+const journalTutorialSteps = [
+  {
+    target: '#journal-textarea',
+    text: "Capture the soul of the moment.\nSpill your thoughts into the void and anchor them in time.",
+    type: 'rect',
+    padding: 12
+  },
+  {
+    target: '#nav-journal',
+    text: "Touch and hold to reveal its secrets.\nLong press the journal tab to manage your chronicles or archive your path.",
+    type: 'circle',
+    padding: 10
+  },
+  {
+    target: '#btn-browse-journal',
+    text: "Walk through the halls of memory.\nBrowse your catalog of journals and revisit who you were.",
+    type: 'circle',
+    padding: 10
+  }
+];
+
+let activeTutorialType = 'main'; // 'main' or 'journal'
+let journalHintTimer = null;
+
+function showJournalHint() {
+  const bubble = document.getElementById('journal-hint-bubble');
+  const navBtn = document.getElementById('nav-journal');
+  if (!bubble || !navBtn) return;
+
+  if (localStorage.getItem('telos_journal_hint_seen') === 'true') {
+    bubble.classList.remove('visible');
+    return;
+  }
+
+  // Position bubble above the nav button
+  const updatePosition = () => {
+    const rect = navBtn.getBoundingClientRect();
+    bubble.style.left = `${rect.left + rect.width / 2}px`;
+  };
+
+  updatePosition();
+  window.addEventListener('resize', updatePosition);
+  
+  // Clear any existing timer to avoid overlaps
+  if (journalHintTimer) clearTimeout(journalHintTimer);
+  
+  // Show after a short delay once on the screen
+  journalHintTimer = setTimeout(() => {
+    // Re-check current screen to ensure we're still in journal
+    const currentScreen = document.querySelector('.screen.active');
+    if (currentScreen && currentScreen.id === 'journal') {
+      bubble.classList.add('visible');
+    }
+  }, 1000);
+}
+
+function markJournalHintSeen() {
+  if (journalHintTimer) {
+    clearTimeout(journalHintTimer);
+    journalHintTimer = null;
+  }
+  const bubble = document.getElementById('journal-hint-bubble');
+  if (bubble) bubble.classList.remove('visible');
+  localStorage.setItem('telos_journal_hint_seen', 'true');
+}
+function runTutorial(type = 'main') {
+  if (type === 'main' && localStorage.getItem('telos_tutorial')) return;
+  if (type === 'journal' && localStorage.getItem('telos_journal_tutorial')) return;
   
   const overlay = document.getElementById('tutorial-overlay');
   if (!overlay) return;
   
+  activeTutorialType = type;
   overlay.classList.remove('hidden');
+  overlay.style.opacity = '1';
   tutorialCurrentStep = 0;
   showTutorialStep();
   
   overlay.onclick = (e) => {
     e.stopPropagation();
     tutorialCurrentStep++;
-    if (tutorialCurrentStep < tutorialSteps.length) {
+    const steps = activeTutorialType === 'main' ? tutorialSteps : journalTutorialSteps;
+    if (tutorialCurrentStep < steps.length) {
       showTutorialStep();
     } else {
       finishTutorial();
@@ -4322,7 +6063,8 @@ function runTutorial() {
 }
 
 function showTutorialStep() {
-  const step = tutorialSteps[tutorialCurrentStep];
+  const steps = activeTutorialType === 'main' ? tutorialSteps : journalTutorialSteps;
+  const step = steps[tutorialCurrentStep];
   const targetEl = document.querySelector(step.target);
   const spotlight = document.getElementById('tutorial-spotlight');
   const textEl = document.getElementById('tutorial-text');
@@ -4331,7 +6073,8 @@ function showTutorialStep() {
   if (!targetEl || targetEl.offsetParent === null) {
     // skip if element is hidden or not in DOM
     tutorialCurrentStep++;
-    if (tutorialCurrentStep < tutorialSteps.length) showTutorialStep();
+    const steps = activeTutorialType === 'main' ? tutorialSteps : journalTutorialSteps;
+    if (tutorialCurrentStep < steps.length) showTutorialStep();
     else finishTutorial();
     return;
   }
@@ -4377,22 +6120,26 @@ function finishTutorial() {
   overlay.style.opacity = '0';
   setTimeout(() => {
     overlay.classList.add('hidden');
-    localStorage.setItem('telos_tutorial', 'true');
     
-    // Request notifications ONLY AFTER tutorial ends
-    if (!localStorage.getItem('telos_notif_prompted')) {
-      localStorage.setItem('telos_notif_prompted', 'true');
-      setTimeout(async () => {
-        try {
-          const granted = await requestNotifPermission();
-          if (granted) {
-            notifSettings.enabled = true;
-            try { localStorage.setItem('telos_notif', JSON.stringify(notifSettings)); } catch(e) {}
-            renderNotifications();
-            scheduleNotifications().catch(() => {});
-          }
-        } catch(e) {}
-      }, 1000);
+    if (activeTutorialType === 'main') {
+      localStorage.setItem('telos_tutorial', 'true');
+      
+      // Request notifications ONLY AFTER main tutorial ends
+      if (!localStorage.getItem('telos_notif_prompted')) {
+        localStorage.setItem('telos_notif_prompted', 'true');
+        setTimeout(async () => {
+          try {
+            const granted = await requestNotifPermission();
+            if (granted) {
+              try { localStorage.setItem('telos_notif', JSON.stringify(notifSettings)); } catch(e) {}
+              renderNotifications();
+              scheduleNotifications().catch(() => {});
+            }
+          } catch(e) {}
+        }, 1000);
+      }
+    } else {
+      localStorage.setItem('telos_journal_tutorial', 'true');
     }
   }, 800);
 }
@@ -4606,7 +6353,7 @@ async function backupToCloud(silent = false) {
     if (cloudSyncState.syncJournals) {
       const journalRef = doc(db, 'users', uid, 'sync', 'journals');
       promises.push(retryableSetDoc(journalRef, {
-        journal, habitJournal, lastModified: timestamp
+        journal, habitJournal, journalBooks, lastModified: timestamp
       }));
     }
 
@@ -4665,6 +6412,7 @@ async function restoreFromCloud() {
         const jData = journalSnap.data();
         cloudData.journal = jData.journal;
         cloudData.habitJournal = jData.habitJournal;
+        cloudData.journalBooks = jData.journalBooks;
       }
       cloudTS = cloudData.lastModified || 0;
     } else if (baseSnap.exists() && baseSnap.data().habits) {
@@ -4706,6 +6454,13 @@ async function applyCloudData(data) {
   if (data.journal && cloudSyncState.syncJournals) {
     journal = data.journal;
     habitJournal = data.habitJournal || {};
+    if (data.journalBooks && data.journalBooks.length > 0) {
+      journalBooks = data.journalBooks;
+    }
+    // Re-run multi-book migration in case cloud data is in flat format
+    journal = migrateJournalToMultiBook(journal);
+    activeBookId = notifSettings.activeBookId || journalBooks[0].id;
+    if (!journalBooks.find(b => b.id === activeBookId)) activeBookId = journalBooks[0].id;
   }
 
   save(); // This updates local timestamp & UI
@@ -4847,4 +6602,39 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+
+// ─── Overflow Debugging Utility ───────────────
+// Run `window.__debugOverflow()` in Chrome DevTools remote inspector
+// to identify elements that render offscreen or cause overflow.
+window.__debugOverflow = function() {
+  const docWidth = document.documentElement.clientWidth;
+  const docHeight = document.documentElement.clientHeight;
+  const offenders = [];
+  document.querySelectorAll('*').forEach(el => {
+    const rect = el.getBoundingClientRect();
+    if (rect.right > docWidth + 1 || rect.left < -1 ||
+        rect.bottom > docHeight + 1 || rect.top < -1) {
+      if (rect.width > 0 && rect.height > 0) {
+        el.style.outline = '2px solid red';
+        offenders.push({
+          el, tag: el.tagName, id: el.id, class: el.className,
+          rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+        });
+      }
+    }
+  });
+  console.table(offenders.map(o => ({
+    tag: o.tag, id: o.id, class: String(o.class).slice(0, 40),
+    left: Math.round(o.rect.left), top: Math.round(o.rect.top),
+    right: Math.round(o.rect.right), bottom: Math.round(o.rect.bottom)
+  })));
+  console.log(`Found ${offenders.length} offscreen elements (outlined in red).`);
+  console.log('Run window.__debugOverflowClear() to remove outlines.');
+  return offenders;
+};
+
+window.__debugOverflowClear = function() {
+  document.querySelectorAll('*').forEach(el => { el.style.outline = ''; });
+  console.log('Overflow outlines cleared.');
+};
 

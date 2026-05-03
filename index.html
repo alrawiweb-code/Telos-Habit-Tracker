@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="dark" data-theme="midnight" style="overflow:hidden">
 <head>
   <meta charset="utf-8"/>
   <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
@@ -18,9 +18,45 @@
   <link href="https://fonts.googleapis.com" rel="preconnect"/>
   <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet"/>
-  <!-- Material Symbols -->
-  <!-- Prevent FOUT on icon ligatures -->
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" rel="stylesheet"/>
+  <!-- Material Symbols — LOCAL (offline-safe, no CDN dependency) -->
+  <link rel="preload" href="/fonts/material-symbols-outlined.woff2" as="font" type="font/woff2" crossorigin/>
+  <style>
+    /* Inline @font-face ensures the browser starts loading the font
+       as early as possible, before external CSS is even parsed. */
+    @font-face {
+      font-family: 'Material Symbols Outlined';
+      font-style: normal;
+      font-weight: 100 700;
+      font-display: block; /* Invisible text until font loads — no ligature flash */
+      src: url('/fonts/material-symbols-outlined.woff2') format('woff2');
+    }
+    /* Hide ALL icon elements completely until font is confirmed loaded.
+       JS removes this class from <html> once document.fonts confirms readiness. */
+    html:not(.fonts-loaded) .material-symbols-outlined {
+      visibility: hidden !important;
+    }
+  </style>
+  <script>
+    // Font-loading gate: mark <html> as fonts-loaded ASAP.
+    // This runs synchronously before body parsing begins.
+    (function() {
+      if (document.fonts && document.fonts.load) {
+        document.fonts.load('24px "Material Symbols Outlined"', 'home').then(function() {
+          document.documentElement.classList.add('fonts-loaded');
+        }).catch(function() {
+          // Fallback: show icons anyway after timeout to avoid permanent invisibility
+          document.documentElement.classList.add('fonts-loaded');
+        });
+        // Safety net: never keep icons hidden longer than 3s even if font fails
+        setTimeout(function() {
+          document.documentElement.classList.add('fonts-loaded');
+        }, 3000);
+      } else {
+        // Very old browser without document.fonts API — just show immediately
+        document.documentElement.classList.add('fonts-loaded');
+      }
+    })();
+  </script>
 
   <link rel="stylesheet" href="styles.css"/>
 </head>
@@ -95,12 +131,12 @@
       <button class="btn-add-first" id="btn-add-first">Set your first intention</button>
     </div>
   </main>
-
-  <!-- FAB -->
-  <button class="fab" id="fab-add" aria-label="Add new intention">
-    <span class="material-symbols-outlined">add</span>
-  </button>
 </div>
+
+<!-- FAB (outside screen container so position:fixed works with contain:layout) -->
+<button class="fab" id="fab-add" aria-label="Add new intention">
+  <span class="material-symbols-outlined">add</span>
+</button>
 
 <!-- ═══════════════════════════════════════════
      SCREEN: JOURNAL
@@ -111,10 +147,12 @@
       <h2 class="page-title">The Journal</h2>
       <p class="page-subtitle">A record of days.</p>
     </div>
-    <button class="btn-browse-journal" id="btn-browse-journal" style="margin-top:0;">
-      <span class="material-symbols-outlined">auto_stories</span>
-      Read Back
-    </button>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="btn-browse-journal" id="btn-browse-journal" style="margin-top:0;">
+        <span class="material-symbols-outlined">auto_stories</span>
+        Read Back
+      </button>
+    </div>
   </div>
   <main class="journal-main">
     <!-- Write Area -->
@@ -131,6 +169,12 @@
           <div class="journal-media-btns" style="display: flex; align-items: center; gap: 8px;">
             <button class="btn-journal-control" id="journal-mic-btn" title="Record Voice">
               <span class="material-symbols-outlined">mic</span>
+            </button>
+            <button class="btn-journal-control" id="journal-dictate-btn" title="Voice Type">
+              <span class="material-symbols-outlined">mic_external_on</span>
+            </button>
+            <button class="btn-journal-control" id="journal-sketch-btn" title="Sketch">
+              <span class="material-symbols-outlined">draw</span>
             </button>
             <button class="btn-journal-control" id="journal-photo-btn" title="Attach Photo">
               <span class="material-symbols-outlined">add_a_photo</span>
@@ -175,6 +219,19 @@
     <p class="page-subtitle">Your consistency, at a glance.</p>
   </div>
   <main class="profile-main">
+    
+    <!-- Premium Subscription Banner -->
+    <div id="profile-premium-banner" class="profile-premium-banner" role="button" tabindex="0" onclick="window.handleProfileBannerClick()">
+      <div class="banner-content">
+        <span class="material-symbols-outlined banner-icon" id="profile-banner-icon">workspace_premium</span>
+        <div class="banner-text">
+          <h4 id="profile-banner-title">Unlock Telos Premium</h4>
+          <p id="profile-banner-desc">Unlimited intentions, ad-free experience, & secret journals.</p>
+        </div>
+      </div>
+      <span class="material-symbols-outlined chevron" id="profile-banner-chevron">chevron_right</span>
+    </div>
+
     <div class="stats-grid">
       <div class="stat-card">
         <span class="stat-number" id="stat-total">0</span>
@@ -197,18 +254,15 @@
     <div class="profile-menu">
       <div class="menu-item-group-label">System</div>
       
-      <div class="menu-item no-hover">
+      <div class="menu-item" id="menu-themes" role="button" tabindex="0">
         <div class="menu-item-content">
-          <span class="material-symbols-outlined menu-icon">dark_mode</span>
+          <span class="material-symbols-outlined menu-icon">palette</span>
           <div class="menu-item-text">
-            <p class="menu-item-title">Dark Mode</p>
-            <p class="menu-item-sub">Gentle on the eyes</p>
+            <p class="menu-item-title">Themes</p>
+            <p class="menu-item-sub" id="current-theme-label">Midnight</p>
           </div>
         </div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="toggle-theme" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        </label>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
       </div>
 
       <div class="menu-item no-hover">
@@ -227,6 +281,20 @@
 
       <div class="menu-item-group-label" style="margin-top: 16px;">Preferences</div>
 
+      <div class="menu-item no-hover">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">visibility</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Journal Hint</p>
+            <p class="menu-item-sub">Show '(touch and hold)' in navbar</p>
+          </div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-journal-hint" checked />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
       <div class="menu-item" id="menu-all-habits" role="button" tabindex="0">
         <div class="menu-item-content">
           <span class="material-symbols-outlined menu-icon">checklist_rtl</span>
@@ -244,6 +312,17 @@
           <div class="menu-item-text">
             <p class="menu-item-title">Notifications & Reminders</p>
             <p class="menu-item-sub">Schedules, smart alerts, and snooze</p>
+          </div>
+        </div>
+        <span class="material-symbols-outlined chevron">chevron_right</span>
+      </div>
+
+      <div class="menu-item" id="menu-change-passcode" role="button" tabindex="0">
+        <div class="menu-item-content">
+          <span class="material-symbols-outlined menu-icon">lock_reset</span>
+          <div class="menu-item-text">
+            <p class="menu-item-title">Change Passcode</p>
+            <p class="menu-item-sub">Update your Secrets PIN</p>
           </div>
         </div>
         <span class="material-symbols-outlined chevron">chevron_right</span>
@@ -275,12 +354,14 @@
         <div class="menu-item-content">
           <span class="material-symbols-outlined menu-icon" style="color: var(--calm-blue, #6fa3ef);">cloud_sync</span>
           <div class="menu-item-text">
-            <p class="menu-item-title">Cloud Sync & Account</p>
+            <p class="menu-item-title">Cloud Sync & Account <span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle; color: #bcaaa4; margin-left: 4px;">lock</span></p>
             <p class="menu-item-sub">Google Sign-In and backups</p>
           </div>
         </div>
         <span class="material-symbols-outlined chevron">chevron_right</span>
       </div>
+
+
 
       <div class="menu-item danger" id="btn-clear-data-menu" role="button" tabindex="0">
         <div class="menu-item-content">
@@ -448,132 +529,72 @@
   </div>
   <main class="profile-main">
     <div class="notif-section">
-      <div class="notif-section-header">
-        <div>
-          <h3 class="section-heading" style="margin-bottom:2px;">Master Control</h3>
-          <p class="notif-section-sub">Enable or disable all app alerts.</p>
-        </div>
-        <label class="toggle-switch" aria-label="Enable Notifications">
-          <input type="checkbox" id="notif-master-toggle" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        </label>
-      </div>
 
       <div id="notif-body" class="notif-body">
-        <!-- Default Reminder Times -->
-        <div class="notif-card">
-          <p class="notif-card-title">
-            <span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px;">schedule</span>
-            Default Reminder Times
-          </p>
-          <div class="notif-time-row">
-            <span class="notif-time-label">Morning</span>
-            <input type="time" class="notif-time-input" id="default-time-morning" value="07:00" />
-          </div>
-          <div class="notif-time-row">
-            <span class="notif-time-label">Afternoon</span>
-            <input type="time" class="notif-time-input" id="default-time-afternoon" value="13:00" />
-          </div>
-          <div class="notif-time-row">
-            <span class="notif-time-label">Evening</span>
-            <input type="time" class="notif-time-input" id="default-time-evening" value="19:00" />
-          </div>
-        </div>
-
-        <!-- Habit-Level Reminders -->
-        <div class="notif-card">
-          <p class="notif-card-title">
-            <span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px;">notifications_active</span>
-            Habit Reminders
-          </p>
-          <ul class="notif-habit-list" id="notif-habit-list">
-            <!-- JS renders per-habit rows here -->
-          </ul>
-        </div>
-
-        <!-- Smart Reminders -->
+        <!-- Daily Briefings -->
         <div class="notif-card">
           <div class="notif-row">
             <div>
               <p class="notif-row-title">
-                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">auto_awesome</span>
-                Smart Reminders
+                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">wb_sunny</span>
+                Morning Briefing
               </p>
-              <p class="notif-row-sub">Only notify if habit is still incomplete</p>
+              <p class="notif-row-sub">Set your daily intentions</p>
             </div>
-            <label class="toggle-switch" aria-label="Enable Smart Reminders">
-              <input type="checkbox" id="notif-smart-toggle" />
+            <label class="toggle-switch" aria-label="Enable Morning Briefing">
+              <input type="checkbox" id="notif-morning-toggle" />
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </label>
           </div>
-          <div id="smart-times-panel" class="notif-sub-panel hidden">
+          <div id="morning-time-panel" class="notif-sub-panel hidden">
             <div class="notif-time-row">
-              <span class="notif-time-label">Check-in 1</span>
-              <input type="time" class="notif-time-input" id="smart-time-1" value="18:00" />
-            </div>
-            <div class="notif-time-row">
-              <span class="notif-time-label">Check-in 2</span>
-              <input type="time" class="notif-time-input" id="smart-time-2" value="21:00" />
+              <span class="notif-time-label">Briefing Time</span>
+              <input type="time" class="notif-time-input" id="morning-time-input" value="08:00" />
             </div>
           </div>
         </div>
 
-        <!-- Streak Alerts -->
+        <div class="notif-card">
+          <div class="notif-row">
+            <div>
+              <p class="notif-row-title">
+                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">nights_stay</span>
+                Evening Review
+              </p>
+              <p class="notif-row-sub">Wrap up and review your day</p>
+            </div>
+            <label class="toggle-switch" aria-label="Enable Evening Review">
+              <input type="checkbox" id="notif-evening-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="evening-time-panel" class="notif-sub-panel hidden">
+            <div class="notif-time-row">
+              <span class="notif-time-label">Review Time</span>
+              <input type="time" class="notif-time-input" id="evening-time-input" value="20:00" />
+            </div>
+          </div>
+        </div>
+
         <div class="notif-card">
           <div class="notif-row">
             <div>
               <p class="notif-row-title">
                 <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">local_fire_department</span>
-                Streak Protection Alerts
+                Streak Saver
               </p>
-              <p class="notif-row-sub">Warn before a streak is broken</p>
+              <p class="notif-row-sub">Automatically get alerted if you are about to lose a long streak.</p>
             </div>
-            <label class="toggle-switch" aria-label="Enable Streak Alerts">
+            <label class="toggle-switch" aria-label="Enable Streak Saver">
               <input type="checkbox" id="notif-streak-toggle" />
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </label>
-          </div>
-          <div id="streak-time-panel" class="notif-sub-panel hidden">
-            <div class="notif-time-row">
-              <span class="notif-time-label">Alert time</span>
-              <input type="time" class="notif-time-input" id="streak-time" value="20:00" />
-            </div>
-          </div>
-        </div>
-
-        <!-- Snooze Settings -->
-        <div class="notif-card">
-          <div class="notif-row">
-            <div>
-              <p class="notif-row-title">
-                <span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;">snooze</span>
-                Snooze Options
-              </p>
-              <p class="notif-row-sub">Appear as actions on notifications</p>
-            </div>
-            <label class="toggle-switch" aria-label="Enable Snooze">
-              <input type="checkbox" id="notif-snooze-toggle" />
-              <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            </label>
-          </div>
-          <div id="snooze-panel" class="notif-sub-panel hidden">
-            <div class="snooze-chips">
-              <label class="snooze-chip"><input type="checkbox" value="10" /> 10 min</label>
-              <label class="snooze-chip"><input type="checkbox" value="30" checked /> 30 min</label>
-              <label class="snooze-chip"><input type="checkbox" value="60" checked /> 1 hour</label>
-            </div>
           </div>
         </div>
 
       </div><!-- /notif-body -->
     </div><!-- /notif-section -->
 
-    <div class="danger-zone">
-      <button class="btn-clear" id="btn-clear-data">
-        <span class="material-symbols-outlined">delete_sweep</span>
-        Clear all data
-      </button>
-    </div>
   </main>
 </div>
 
@@ -596,9 +617,11 @@
       <p style="margin-bottom: 20px; line-height: 1.6;">This app is developed by <strong>Alrawi Ventures</strong>.</p>
       <p style="line-height: 1.6; color: var(--slate);">We focus on building simple, intuitive, and reliable digital experiences that deliver real value to users.</p>
       
-      <div style="margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--greige); text-align: center;">
-        <img src="Favicons/web-app-manifest-192x192.png" alt="Logo" style="width: 48px; height: 48px; border-radius: 12px; opacity: 0.6; filter: grayscale(1); margin-bottom: 8px;">
-        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--sage); font-weight: 700;">Version 0.1.0</p>
+      <div style="margin-top: 40px; padding-top: 32px; border-top: 1px solid var(--greige); text-align: center;">
+        <div id="about-logo-container" style="display: inline-block; cursor: pointer; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);" active-scale="0.95">
+          <img src="Favicons/web-app-manifest-192x192.png" id="about-logo-tap" alt="Telos Logo" style="width: 80px; height: 80px; border-radius: 20px; margin-bottom: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.1);">
+        </div>
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--sage); font-weight: 700; opacity: 0.8;">Version 1.4.9</p>
       </div>
     </div>
   </main>
@@ -620,6 +643,35 @@
   <main class="profile-main webview-main">
     <div class="webview-container">
       <iframe id="privacy-iframe" title="Privacy Policy" src="about:blank"></iframe>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCREEN: THEMES
+     ═══════════════════════════════════════════ -->
+<div id="screen-themes" class="screen">
+  <div class="page-header sub-header">
+    <button class="btn-back-sub" id="btn-back-themes" aria-label="Back to Profile">
+      <span class="material-symbols-outlined">arrow_back</span>
+    </button>
+    <div class="header-text-group">
+      <h2 class="page-title">Themes</h2>
+      <p class="page-subtitle">Make it yours.</p>
+    </div>
+  </div>
+  <main class="profile-main" style="padding-top: 16px;">
+    <div class="theme-section">
+      <p class="theme-section-label">Dark</p>
+      <div class="theme-grid" id="theme-grid-dark">
+        <!-- JS renders theme cards -->
+      </div>
+    </div>
+    <div class="theme-section">
+      <p class="theme-section-label">Light</p>
+      <div class="theme-grid" id="theme-grid-light">
+        <!-- JS renders theme cards -->
+      </div>
     </div>
   </main>
 </div>
@@ -672,6 +724,9 @@
           <button class="btn-journal-control" id="detail-mic-btn" title="Record Voice">
             <span class="material-symbols-outlined">mic</span>
           </button>
+          <button class="btn-journal-control" id="detail-sketch-btn" title="Sketch">
+            <span class="material-symbols-outlined">draw</span>
+          </button>
           <button class="btn-journal-control" id="detail-photo-btn" title="Attach Photo">
             <span class="material-symbols-outlined">add_a_photo</span>
           </button>
@@ -698,19 +753,75 @@
      BOTTOM NAVIGATION
 ═══════════════════════════════════════════ -->
 <nav class="bottom-nav" id="bottom-nav" role="tablist" aria-label="Main navigation">
-  <a href="#" class="nav-item active" id="nav-today" data-screen="today" role="tab" aria-selected="true" aria-label="Today">
+  <button class="nav-item active" id="nav-today" data-screen="today" role="tab" aria-selected="true" aria-label="Today">
     <div class="nav-icon"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1;">home</span></div>
     <span class="nav-label">Today</span>
-  </a>
-  <a href="#" class="nav-item" id="nav-journal" data-screen="journal" role="tab" aria-selected="false" aria-label="Journal">
+  </button>
+  <button class="nav-item" id="nav-journal" data-screen="journal" role="tab" aria-selected="false" aria-label="Journal">
     <div class="nav-icon"><span class="material-symbols-outlined">menu_book</span></div>
     <span class="nav-label">Journal</span>
-  </a>
-  <a href="#" class="nav-item" id="nav-profile" data-screen="profile" role="tab" aria-selected="false" aria-label="Profile">
+    <span class="nav-sublabel" id="nav-journal-sublabel">(touch and hold)</span>
+  </button>
+  <button class="nav-item" id="nav-profile" data-screen="profile" role="tab" aria-selected="false" aria-label="Profile">
     <div class="nav-icon"><span class="material-symbols-outlined">person</span></div>
     <span class="nav-label">Profile</span>
-  </a>
+  </button>
 </nav>
+<div id="journal-hint-bubble" class="nav-hint-bubble">Touch & hold to manage journals</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: PREMIUM UPSELL (Intention Creation / PDF Export)
+═══════════════════════════════════════════ -->
+<div id="premium-upsell-overlay" class="modal-overlay premium-upsell-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="upsell-title">
+  <div class="modal modal-premium" id="premium-upsell-modal">
+    <button class="modal-close upsell-close" aria-label="Close" id="btn-upsell-close">
+      <span class="material-symbols-outlined">close</span>
+    </button>
+    <div class="premium-body">
+      <span class="material-symbols-outlined premium-hero-icon">workspace_premium</span>
+      <h3 class="premium-title" id="upsell-title">Unlock Telos Premium</h3>
+      <p class="premium-subtitle" id="upsell-subtitle">Elevate your journaling experience.</p>
+      
+      <ul class="premium-features">
+        <li><span class="material-symbols-outlined feat-check">check_circle</span> Unlimited intentions</li>
+        <li><span class="material-symbols-outlined feat-check">check_circle</span> Ad-free experience</li>
+        <li><span class="material-symbols-outlined feat-check">check_circle</span> Full PDF journal export</li>
+        <li><span class="material-symbols-outlined feat-check">check_circle</span> Secret journals & more</li>
+      </ul>
+      <button class="btn-premium-upgrade" id="btn-upsell-upgrade">
+        <span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle;margin-right:6px;">diamond</span>
+        Upgrade to Premium
+      </button>
+      <button class="btn-ad-fallback" id="btn-upsell-watch-ad">Watch Ad to Continue</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: AD LOADING OVERLAY
+═══════════════════════════════════════════ -->
+<div id="ad-loading-overlay" class="modal-overlay hidden" style="z-index: 9999; flex-direction: column; align-items: center; justify-content: center;">
+  <div style="width: 48px; height: 48px; border: 4px solid var(--text-tertiary); border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+  <p style="margin-top: 16px; font-weight: 500; font-size: 1.125rem; color: var(--text-primary);">Unlocking feature...</p>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: REWARD FORFEIT CONFIRMATION
+═══════════════════════════════════════════ -->
+<div id="reward-forfeit-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="forfeit-title">
+  <div class="modal modal-small" id="reward-forfeit-modal">
+    <div class="modal-body modal-forfeit-body">
+      <span class="material-symbols-outlined forfeit-icon">play_circle</span>
+      <h3 class="modal-title" id="forfeit-title">Reward Not Earned</h3>
+      <p class="forfeit-desc">You closed the ad before it finished. Watch the full ad to unlock this feature.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" id="btn-forfeit-skip">Skip</button>
+      <button class="btn-confirm" id="btn-forfeit-retry">Watch Again</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════════════════════════════════════
      MODAL: ADD INTENTION (with schedule)
@@ -908,7 +1019,7 @@
     <div class="modal-body">
       <p id="history-modal-date" class="journal-date-label" style="margin-bottom: 8px;"></p>
       <div id="history-habit-info" class="detail-no-entries" style="display:none; padding: 0 0 12px; border:none; color:var(--sage); font-weight:600; text-align:left; font-style:normal;"></div>
-      <textarea id="history-edit-textarea" class="journal-textarea" placeholder="What would you like to update?"></textarea>
+      <textarea id="history-edit-textarea" class="detail-journal-textarea" placeholder="What would you like to update?"></textarea>
     </div>
     <div class="modal-footer">
       <button class="btn-cancel" id="btn-cancel-history">Cancel</button>
@@ -1152,6 +1263,189 @@
     </button>
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════════
+     OVERLAY: BOOK CATALOG
+     ═══════════════════════════════════════════ -->
+<div id="book-catalog-overlay" class="modal-overlay hidden">
+  <div class="book-catalog-modal">
+    <div class="book-catalog-header">
+      <h3 class="book-catalog-title">Your Journals</h3>
+      <button id="btn-close-catalog" class="btn-close-modal" aria-label="Close">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="book-catalog-grid" id="book-catalog-grid">
+      <!-- JS renders book cards -->
+    </div>
+    <button class="btn-create-book" id="btn-create-book">
+      <span class="material-symbols-outlined">add</span>
+      New Journal
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     OVERLAY: CREATE NEW BOOK
+     ═══════════════════════════════════════════ -->
+<div id="new-book-overlay" class="modal-overlay hidden">
+  <div class="new-book-modal">
+    <h3 class="new-book-title">Create Journal</h3>
+    <div class="new-book-field">
+      <label for="new-book-name" class="new-book-label">Name</label>
+      <input type="text" id="new-book-name" class="new-book-input" placeholder="e.g. Work Ideas, Gratitude..." maxlength="40" />
+    </div>
+    <div class="new-book-field">
+      <label class="new-book-label">Cover Style</label>
+      <div class="cover-picker-grid" id="cover-picker-grid">
+        <!-- JS renders cover options -->
+      </div>
+    </div>
+    <div class="new-book-actions">
+      <button id="btn-cancel-new-book" class="btn-new-book-cancel">Cancel</button>
+      <button id="btn-confirm-new-book" class="btn-new-book-confirm">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     OVERLAY: BOOK CONTEXT MENU (LONG PRESS)
+     ═══════════════════════════════════════════ -->
+<div id="book-context-menu-overlay" class="modal-overlay hidden">
+  <div class="action-sheet" id="book-context-menu">
+    <div class="action-sheet-header">
+      <p id="context-menu-book-title" class="action-sheet-title">Journal Name</p>
+    </div>
+    <button id="btn-context-edit" class="action-sheet-btn">
+      <span class="material-symbols-outlined">edit</span>
+      <span>Edit Journal</span>
+    </button>
+    <button id="btn-context-export" class="action-sheet-btn">
+      <span class="material-symbols-outlined">picture_as_pdf</span>
+      <span>Export as PDF</span>
+    </button>
+    <button id="btn-context-hide" class="action-sheet-btn">
+      <span class="material-symbols-outlined" id="context-icon-hide">lock</span>
+      <span id="context-text-hide">Hide Journal</span>
+    </button>
+    <div class="action-sheet-divider"></div>
+    <button id="btn-context-delete" class="action-sheet-btn text-danger">
+      <span class="material-symbols-outlined">delete_forever</span>
+      <span>Delete Journal</span>
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     OVERLAY: PASSCODE
+     ═══════════════════════════════════════════ -->
+<div id="passcode-overlay" class="modal-overlay hidden">
+  <div class="passcode-modal">
+    <div class="passcode-header">
+      <h3 class="passcode-title">Enter Passcode</h3>
+      <p class="passcode-subtitle">Unlock your secrets</p>
+    </div>
+    
+    <div class="passcode-dots-container" id="passcode-dots">
+      <div class="passcode-dot"></div>
+      <div class="passcode-dot"></div>
+      <div class="passcode-dot"></div>
+      <div class="passcode-dot"></div>
+    </div>
+
+    <div class="passcode-keypad">
+      <button class="keypad-btn" data-val="1">1</button>
+      <button class="keypad-btn" data-val="2">2</button>
+      <button class="keypad-btn" data-val="3">3</button>
+      <button class="keypad-btn" data-val="4">4</button>
+      <button class="keypad-btn" data-val="5">5</button>
+      <button class="keypad-btn" data-val="6">6</button>
+      <button class="keypad-btn" data-val="7">7</button>
+      <button class="keypad-btn" data-val="8">8</button>
+      <button class="keypad-btn" data-val="9">9</button>
+      <button class="keypad-btn keypad-action" id="btn-passcode-cancel">Cancel</button>
+      <button class="keypad-btn" data-val="0">0</button>
+      <button class="keypad-btn keypad-action" id="btn-passcode-delete">
+        <span class="material-symbols-outlined">backspace</span>
+      </button>
+    </div>
+  </div>
+</div>
+<!-- ═══════════════════════════════════════════
+     OVERLAY: SKETCHPAD
+     ═══════════════════════════════════════════ -->
+<div id="sketch-modal-overlay" class="modal-overlay hidden">
+  <div class="sketch-modal">
+    <div class="sketch-header">
+      <h3 class="sketch-title">Sketchpad</h3>
+      <button id="btn-close-sketch" class="btn-close-modal" aria-label="Close">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="sketch-canvas-container">
+      <canvas id="sketch-canvas"></canvas>
+    </div>
+    <div class="sketch-toolbar-wrapper">
+      <div class="sketch-toolbar">
+        <div class="sketch-tools-group">
+          <!-- Hidden color picker with a styled wrapper to ensure it looks good on mobile -->
+          <div class="sketch-color-wrapper" id="sketch-color-wrapper" style="background-color: #2a2a2a;" title="Color Picker">
+            <input type="color" id="sketch-color-picker" class="sketch-tool-color-hidden" value="#2a2a2a" />
+          </div>
+          <div class="sketch-divider"></div>
+          <button class="sketch-tool-btn active" data-action="pen" title="Pen">
+            <span class="material-symbols-outlined" style="font-size: 20px; pointer-events: none;">edit</span>
+          </button>
+          <button class="sketch-tool-btn" data-action="eraser" title="Eraser">
+            <span class="material-symbols-outlined" style="font-size: 20px; pointer-events: none;">ink_eraser</span>
+          </button>
+          <div class="sketch-divider"></div>
+          <button class="sketch-size-btn active" data-size="3" title="Thin">
+            <div class="size-dot" style="width: 4px; height: 4px;"></div>
+          </button>
+          <button class="sketch-size-btn" data-size="6" title="Medium">
+            <div class="size-dot" style="width: 8px; height: 8px;"></div>
+          </button>
+          <button class="sketch-size-btn" data-size="12" title="Thick">
+            <div class="size-dot" style="width: 14px; height: 14px;"></div>
+          </button>
+        </div>
+      </div>
+      <div class="sketch-action-bar">
+        <div class="sketch-actions-left">
+          <button id="btn-undo-sketch" class="sketch-action-icon" disabled title="Undo">
+            <span class="material-symbols-outlined" style="font-size: 20px;">undo</span>
+          </button>
+          <button id="btn-redo-sketch" class="sketch-action-icon" disabled title="Redo">
+            <span class="material-symbols-outlined" style="font-size: 20px;">redo</span>
+          </button>
+          <div class="sketch-divider"></div>
+          <button id="btn-bg-blank" class="sketch-bg-btn active" data-bg="blank" title="No Background">
+            <span class="material-symbols-outlined" style="font-size: 18px; pointer-events: none;">crop_square</span>
+          </button>
+          <button id="btn-bg-lined" class="sketch-bg-btn" data-bg="lined" title="Lined Background">
+            <span class="material-symbols-outlined" style="font-size: 18px; pointer-events: none;">format_align_justify</span>
+          </button>
+          <button id="btn-bg-grid" class="sketch-bg-btn" data-bg="grid" title="Grid Background">
+            <span class="material-symbols-outlined" style="font-size: 18px; pointer-events: none;">grid_on</span>
+          </button>
+        </div>
+        <div class="sketch-actions-right">
+          <button class="sketch-action-btn" id="btn-clear-sketch">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div class="sketch-actions">
+      <button id="btn-cancel-sketch" class="btn-new-book-cancel">Cancel</button>
+      <button id="btn-save-sketch" class="btn-new-book-confirm">Attach</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     OVERLAY: PREMIUM UPSELL
+     ═══════════════════════════════════════════ -->
+
 
 <script type="module" src="app.js"></script>
 </body>

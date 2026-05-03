@@ -2,6 +2,11 @@
   "appId": "com.alrawi.telos",
   "appName": "Telos",
   "webDir": "dist",
+  "android": {
+    "backgroundColor": "#121212",
+    "allowMixedContent": false,
+    "overScrollMode": "never"
+  },
   "plugins": {
     "FirebaseAuthentication": {
       "skipNativeAuth": false,
